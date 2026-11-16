@@ -335,8 +335,8 @@ pub fn verify_entry(
 /// exposed to this gap, and this function provides the missing verification.
 pub fn verify_delegated_threshold(
     entry: &SignedEntry,
-    _expected: &ChargeParams,
-    _current_ledger: u32,
+    expected: &ChargeParams,
+    current_ledger: u32,
     network_passphrase: &str,
     signers_with_weights: &[(Address, u32)],
     threshold: u32,
@@ -344,39 +344,61 @@ pub fn verify_delegated_threshold(
     let xdr_entry = entry.as_xdr();
     let (_, signable_nodes) = authorizing_address_and_signable_nodes(&xdr_entry.credentials)?;
 
-    // Determine the minimum total weight needed.
-    let min_threshold = threshold;
+    let (_, signature_expiration_ledger, _) =
+        crate::sign::credential_preimage_fields(&xdr_entry.credentials)?;
+    if signature_expiration_ledger <= current_ledger {
+        return Err(SorochargeError::ExpiredEntry {
+            valid_until_ledger: signature_expiration_ledger,
+            current_ledger,
+        });
+    }
+    if signature_expiration_ledger > expected.valid_until_ledger {
+        return Err(SorochargeError::ExpirationExceedsAllowance {
+            signature_expiration_ledger,
+            allowed_until_ledger: expected.valid_until_ledger,
+        });
+    }
 
-    // Count how many of the signable nodes have valid signatures,
-    // weighted by each signer's weight.
-    let mut valid_sig_count: u32 = 0;
+    let payload = signing_payload(
+        &xdr_entry.credentials,
+        &xdr_entry.root_invocation,
+        network_passphrase,
+    )?;
+
+    // Count each delegate's weight at most once. `SignedEntry::from_xdr`
+    // performs no validation, so a maliciously crafted entry could list the
+    // same delegate address more than once in `signable_nodes` (the
+    // duplicate-signer check in `build_delegated_credentials` only applies
+    // to entries this library itself built) — without deduplicating here,
+    // one genuine signature could be counted twice and inflate the total
+    // past `threshold`.
+    let mut counted: std::collections::HashSet<Address> = std::collections::HashSet::new();
+    let mut valid_weight: u32 = 0;
     for (address, signature) in &signable_nodes {
-        if let Some((pk_bytes, sig_bytes)) = extract_account_signature(signature) {
-            // Find the signer's weight
-            if let Some((_, weight)) = signers_with_weights
-                .iter()
-                .find(|(addr, _)| *addr == *address)
-            {
-                // Verify the signature is valid for this account's key
-                let Ok(verifying_key) = VerifyingKey::from_bytes(&pk_bytes) else {
-                    continue;
-                };
-                let payload = signing_payload(
-                    &xdr_entry.credentials,
-                    &xdr_entry.root_invocation,
-                    network_passphrase,
-                )?;
-                if verifying_key
-                    .verify(&payload, &Signature::from_bytes(&sig_bytes))
-                    .is_ok()
-                {
-                    valid_sig_count += weight;
-                }
-            }
+        if !counted.insert(address.clone()) {
+            continue;
+        }
+        let Some((pk_bytes, sig_bytes)) = extract_account_signature(signature) else {
+            continue;
+        };
+        let Some((_, weight)) = signers_with_weights
+            .iter()
+            .find(|(addr, _)| addr == address)
+        else {
+            continue;
+        };
+        let Ok(verifying_key) = VerifyingKey::from_bytes(&pk_bytes) else {
+            continue;
+        };
+        if verifying_key
+            .verify(&payload, &Signature::from_bytes(&sig_bytes))
+            .is_ok()
+        {
+            valid_weight += weight;
         }
     }
 
-    if valid_sig_count < min_threshold {
+    if valid_weight < threshold {
         return Err(SorochargeError::InvalidSignature);
     }
 
@@ -673,5 +695,189 @@ mod tests {
             &f.network_passphrase,
         );
         assert_eq!(result, Err(SorochargeError::UnexpectedInvocationShape));
+    }
+
+    mod delegated_threshold {
+        use super::*;
+        use crate::entry::{build_charge_entry_with_nonce, CredentialKind, UnsignedEntry};
+        use crate::sign::sign_entry;
+        use crate::Signer as SorochargeSigner;
+        use ed25519_dalek::{Signer as DalekSigner, SigningKey};
+
+        struct LocalSigner {
+            seed: [u8; 32],
+            address: Address,
+        }
+
+        impl SorochargeSigner for LocalSigner {
+            fn sign_preimage(&self, preimage: &[u8]) -> Result<[u8; 64], SorochargeError> {
+                Ok(SigningKey::from_bytes(&self.seed).sign(preimage).to_bytes())
+            }
+
+            fn address(&self) -> Address {
+                self.address.clone()
+            }
+        }
+
+        fn delegate(seed: u8) -> ([u8; 32], Address) {
+            let seed_bytes = [seed; 32];
+            let verifying_key = SigningKey::from_bytes(&seed_bytes).verifying_key();
+            let address = ScAddress::Account(AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(
+                verifying_key.to_bytes(),
+            ))));
+            (seed_bytes, address)
+        }
+
+        fn charge_params(payer: Address, valid_until_ledger: u32) -> ChargeParams {
+            ChargeParams {
+                asset_contract: "CAZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGGJH"
+                    .parse()
+                    .unwrap(),
+                amount: 1_000,
+                payer,
+                recipient: "GCQJVJPUPJTVTABP7FK7RXBNFIKKLSM5EO7JP6DECJ77SOBUKWSPB64N"
+                    .parse()
+                    .unwrap(),
+                valid_until_ledger,
+            }
+        }
+
+        /// Builds a Delegated entry over `all_delegates`, signed by only the
+        /// delegates at `signing_indices` — one `sign_entry` call per
+        /// signer, each folding its signature onto the previous result, the
+        /// same way a real multi-signer flow accumulates signatures.
+        fn build_signed_delegated(
+            all_delegates: &[([u8; 32], Address)],
+            signing_indices: &[usize],
+            entry_valid_until_ledger: u32,
+            expected_valid_until_ledger: u32,
+            network_passphrase: &str,
+        ) -> (SignedEntry, ChargeParams) {
+            let signers: Vec<Address> = all_delegates.iter().map(|(_, a)| a.clone()).collect();
+            let payer: Address = "GDIEVMRSOQV3JKZ2CNUL2RQV4TTNAISKW4NAC25PQUQKGMWJO6DTOAE7"
+                .parse()
+                .unwrap();
+            let params = charge_params(payer, expected_valid_until_ledger);
+            let mut entry_params = params.clone();
+            entry_params.valid_until_ledger = entry_valid_until_ledger;
+
+            let unsigned = build_charge_entry_with_nonce(
+                &entry_params,
+                CredentialKind::Delegated { signers },
+                42,
+            )
+            .expect("build_charge_entry_with_nonce should succeed for Delegated credentials");
+
+            let mut xdr_entry = unsigned.as_xdr().clone();
+            for &i in signing_indices {
+                let (seed, address) = all_delegates[i].clone();
+                let local_signer = LocalSigner { seed, address };
+                let signed =
+                    sign_entry(UnsignedEntry(xdr_entry), &local_signer, network_passphrase)
+                        .expect("sign_entry should succeed for a matching delegate address");
+                xdr_entry = signed.as_xdr().clone();
+            }
+            (SignedEntry::from_xdr(xdr_entry), params)
+        }
+
+        const NETWORK: &str = "Test SDF Network ; September 2015";
+
+        #[test]
+        fn accepts_an_entry_meeting_the_threshold() {
+            let delegates = [delegate(0x01), delegate(0x02), delegate(0x03)];
+            let (signed, params) =
+                build_signed_delegated(&delegates, &[0, 1], 1_000, 1_000, NETWORK);
+            let weights: Vec<(Address, u32)> =
+                delegates.iter().map(|(_, a)| (a.clone(), 1)).collect();
+
+            let result = verify_delegated_threshold(&signed, &params, 500, NETWORK, &weights, 2);
+            assert_eq!(result, Ok(()));
+        }
+
+        #[test]
+        fn rejects_when_signed_weight_is_below_the_threshold() {
+            let delegates = [delegate(0x01), delegate(0x02), delegate(0x03)];
+            // Only one of three delegates signs; threshold needs two.
+            let (signed, params) = build_signed_delegated(&delegates, &[0], 1_000, 1_000, NETWORK);
+            let weights: Vec<(Address, u32)> =
+                delegates.iter().map(|(_, a)| (a.clone(), 1)).collect();
+
+            let result = verify_delegated_threshold(&signed, &params, 500, NETWORK, &weights, 2);
+            assert_eq!(result, Err(SorochargeError::InvalidSignature));
+        }
+
+        #[test]
+        fn rejects_an_expired_entry() {
+            let delegates = [delegate(0x01), delegate(0x02)];
+            let (signed, params) =
+                build_signed_delegated(&delegates, &[0, 1], 1_000, 1_000, NETWORK);
+            let weights: Vec<(Address, u32)> =
+                delegates.iter().map(|(_, a)| (a.clone(), 1)).collect();
+
+            // current_ledger == the entry's own expiration ledger: already expired.
+            let result = verify_delegated_threshold(&signed, &params, 1_000, NETWORK, &weights, 2);
+            assert_eq!(
+                result,
+                Err(SorochargeError::ExpiredEntry {
+                    valid_until_ledger: 1_000,
+                    current_ledger: 1_000,
+                })
+            );
+        }
+
+        #[test]
+        fn rejects_an_entry_valid_longer_than_the_caller_allows() {
+            let delegates = [delegate(0x01), delegate(0x02)];
+            // The entry itself is valid until 1_000, but the caller only
+            // allows up to 900.
+            let (signed, params) = build_signed_delegated(&delegates, &[0, 1], 1_000, 900, NETWORK);
+            let weights: Vec<(Address, u32)> =
+                delegates.iter().map(|(_, a)| (a.clone(), 1)).collect();
+
+            let result = verify_delegated_threshold(&signed, &params, 500, NETWORK, &weights, 2);
+            assert_eq!(
+                result,
+                Err(SorochargeError::ExpirationExceedsAllowance {
+                    signature_expiration_ledger: 1_000,
+                    allowed_until_ledger: 900,
+                })
+            );
+        }
+
+        #[test]
+        fn does_not_double_count_a_duplicated_delegate_node() {
+            // Two delegates, weight 1 each, threshold 2 — a single signer's
+            // weight must never be enough on its own.
+            let delegates = [delegate(0x01), delegate(0x02)];
+            let (signed, params) = build_signed_delegated(&delegates, &[0], 1_000, 1_000, NETWORK);
+            let weights: Vec<(Address, u32)> =
+                delegates.iter().map(|(_, a)| (a.clone(), 1)).collect();
+
+            // Simulate a malformed/malicious entry — `SignedEntry::from_xdr`
+            // performs no validation — where the single signing delegate's
+            // node is listed twice in `delegates`, the way
+            // `build_delegated_credentials`'s own duplicate check would
+            // reject if this library had built the entry itself.
+            let SorobanCredentials::AddressWithDelegates(mut creds) =
+                signed.as_xdr().credentials.clone()
+            else {
+                panic!("expected AddressWithDelegates credentials");
+            };
+            let duplicate = creds.delegates.first().unwrap().clone();
+            let mut delegate_vec: Vec<_> = creds.delegates.iter().cloned().collect();
+            delegate_vec.push(duplicate);
+            creds.delegates = delegate_vec.try_into().unwrap();
+            let tampered = SignedEntry::from_xdr(SorobanAuthorizationEntry {
+                credentials: SorobanCredentials::AddressWithDelegates(creds),
+                root_invocation: signed.as_xdr().root_invocation.clone(),
+            });
+
+            let result = verify_delegated_threshold(&tampered, &params, 500, NETWORK, &weights, 2);
+            assert_eq!(
+                result,
+                Err(SorochargeError::InvalidSignature),
+                "one real signature listed twice must not be counted as two signers' worth of weight"
+            );
+        }
     }
 }
