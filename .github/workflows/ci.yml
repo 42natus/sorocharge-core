@@ -64,3 +64,22 @@ jobs:
 
       - name: Run golden-vector tests
         run: cargo test --workspace -- golden_vector
+
+  semver-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust 1.98.1
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo-semver-checks
+        uses: obi1kenobi/cargo-semver-checks-action@v2
+        with:
+          baseline-rev: v0.1.2

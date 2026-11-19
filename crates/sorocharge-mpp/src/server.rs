@@ -503,3 +503,214 @@ fn hex_decode_32(s: &str) -> Option<[u8; 32]> {
     }
     Some(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::header::encode_base64url_jcs;
+    use crate::network::TESTNET_PASSPHRASE;
+    use crate::tx::build_sponsored_envelope;
+    use crate::types::{Challenge, ChargeRequest, Credential, MethodDetails, Payload};
+    use chrono::{Duration, Utc};
+    use ed25519_dalek::{Signer as DalekSigner, SigningKey};
+    use sorocharge_signer::{
+        build_charge_entry, sign_entry, Address, ChargeParams, CredentialKind, Signer,
+    };
+    use stellar_rpc_client::Client;
+    use stellar_xdr::WriteXdr;
+
+    struct TestSigner {
+        address: Address,
+    }
+
+    impl Signer for TestSigner {
+        fn sign_preimage(
+            &self,
+            _preimage: &[u8],
+        ) -> Result<[u8; 64], sorocharge_signer::SorochargeError> {
+            Ok([0u8; 64])
+        }
+        fn address(&self) -> Address {
+            self.address.clone()
+        }
+    }
+
+    struct KeyedSigner {
+        signing_key: SigningKey,
+        address: Address,
+    }
+
+    impl Signer for KeyedSigner {
+        fn sign_preimage(
+            &self,
+            preimage: &[u8],
+        ) -> Result<[u8; 64], sorocharge_signer::SorochargeError> {
+            Ok(self.signing_key.sign(preimage).to_bytes())
+        }
+        fn address(&self) -> Address {
+            self.address.clone()
+        }
+    }
+
+    fn test_addresses() -> (Address, Address, Address) {
+        let asset: Address = "CAZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGGJH"
+            .parse()
+            .unwrap();
+        let payer: Address = "GDIEVMRSOQV3JKZ2CNUL2RQV4TTNAISKW4NAC25PQUQKGMWJO6DTOAE7"
+            .parse()
+            .unwrap();
+        let recipient: Address = "GCQJVJPUPJTVTABP7FK7RXBNFIKKLSM5EO7JP6DECJ77SOBUKWSPB64N"
+            .parse()
+            .unwrap();
+        (asset, payer, recipient)
+    }
+
+    #[tokio::test]
+    async fn hash_already_consumed_returned_when_already_consumed() {
+        let (asset, payer, recipient) = test_addresses();
+        let rpc = Client::new("http://127.0.0.1:1").unwrap();
+        let signer = TestSigner {
+            address: payer.clone(),
+        };
+        let server = MppServer::new(
+            &rpc,
+            &signer,
+            TESTNET_PASSPHRASE.to_string(),
+            MppServerConfig::default(),
+        );
+
+        let expected = ChargeRequest {
+            amount: "42000000".to_string(),
+            currency: asset.to_string(),
+            recipient: recipient.to_string(),
+            description: None,
+            external_id: None,
+            method_details: MethodDetails {
+                network: "stellar:testnet".to_string(),
+                fee_payer: false,
+            },
+        };
+        let request_b64 = encode_base64url_jcs(&expected).unwrap();
+        let credential = Credential {
+            challenge: Challenge {
+                id: "test-id".to_string(),
+                realm: "example.com".to_string(),
+                method: "stellar".to_string(),
+                intent: "charge".to_string(),
+                request: request_b64,
+                description: None,
+                opaque: None,
+                digest: None,
+                expires: Some((Utc::now() + Duration::minutes(5)).to_rfc3339()),
+                header: None,
+            },
+            payload: Payload::Hash {
+                hash: "a1b2c3d4e5f6789012345678901234567890123456789012345678901234abcd"
+                    .to_string(),
+            },
+            source: None,
+        };
+
+        let result = server
+            .settle_credential(&credential, &expected, Utc::now(), true)
+            .await;
+        assert!(matches!(result, Err(MppError::HashAlreadyConsumed)));
+    }
+
+    async fn start_mock_rpc() -> (String, tokio::task::JoinHandle<()>) {
+        use axum::{routing::post, Json, Router};
+        use serde_json::{json, Value};
+        async fn handler(Json(body): Json<Value>) -> Json<Value> {
+            let id = body.get("id").cloned().unwrap_or_else(|| json!(1));
+            let method = body.get("method").and_then(|m| m.as_str()).unwrap_or("");
+            let result = match method {
+                "getLatestLedger" => json!({
+                    "id": "mock",
+                    "protocolVersion": 22,
+                    "sequence": 100u32
+                }),
+                _ => json!({}),
+            };
+            Json(json!({"jsonrpc":"2.0","id": id, "result": result}))
+        }
+        let app = Router::new().route("/", post(handler));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (format!("http://{}", addr), handle)
+    }
+
+    #[tokio::test]
+    async fn server_address_conflict_returned_for_sponsored_pull_mode() {
+        let (asset, payer, recipient) = test_addresses();
+        let (url, _handle) = start_mock_rpc().await;
+        let rpc = Client::new(&url).unwrap();
+        let server_signer = TestSigner {
+            address: payer.clone(),
+        };
+        let server = MppServer::new(
+            &rpc,
+            &server_signer,
+            TESTNET_PASSPHRASE.to_string(),
+            MppServerConfig::default(),
+        );
+
+        let amount: i128 = 42_000_000;
+        let params = ChargeParams {
+            asset_contract: asset.clone(),
+            amount,
+            payer: payer.clone(),
+            recipient: recipient.clone(),
+            valid_until_ledger: 120,
+        };
+        let signing_key = SigningKey::from_bytes(&[0x11u8; 32]);
+        let keyed = KeyedSigner {
+            signing_key,
+            address: payer.clone(),
+        };
+        let unsigned = build_charge_entry(&params, CredentialKind::Legacy).unwrap();
+        let signed = sign_entry(unsigned, &keyed, TESTNET_PASSPHRASE).unwrap();
+        let envelope = build_sponsored_envelope(&params, &signed).unwrap();
+        use base64::Engine;
+        let envelope_b64 = base64::engine::general_purpose::STANDARD
+            .encode(envelope.to_xdr(stellar_xdr::Limits::none()).unwrap());
+
+        let expected = ChargeRequest {
+            amount: amount.to_string(),
+            currency: asset.to_string(),
+            recipient: recipient.to_string(),
+            description: None,
+            external_id: None,
+            method_details: MethodDetails {
+                network: "stellar:testnet".to_string(),
+                fee_payer: true,
+            },
+        };
+        let request_b64 = encode_base64url_jcs(&expected).unwrap();
+        let credential = Credential {
+            challenge: Challenge {
+                id: "test-id".to_string(),
+                realm: "example.com".to_string(),
+                method: "stellar".to_string(),
+                intent: "charge".to_string(),
+                request: request_b64,
+                description: None,
+                opaque: None,
+                digest: None,
+                expires: Some((Utc::now() + Duration::minutes(5)).to_rfc3339()),
+                header: None,
+            },
+            payload: Payload::Transaction {
+                transaction: envelope_b64,
+            },
+            source: None,
+        };
+
+        let result = server
+            .settle_credential(&credential, &expected, Utc::now(), false)
+            .await;
+        assert!(matches!(result, Err(MppError::ServerAddressConflict)));
+    }
+}
