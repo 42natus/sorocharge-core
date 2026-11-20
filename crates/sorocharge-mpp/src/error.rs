@@ -76,6 +76,10 @@ pub enum MppError {
         reason: String,
     },
     /// The pushed transaction hash has already been consumed (replay).
+    ///
+    /// Returned by `settle_push_mode` in `server.rs` when the caller's replay
+    /// store indicates that the submitted transaction hash was previously consumed.
+    /// Audited for issue #306; no mismatch found.
     HashAlreadyConsumed,
     /// The credential failed one of the spec's verification checks.
     VerificationFailed {
