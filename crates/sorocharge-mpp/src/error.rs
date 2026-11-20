@@ -81,7 +81,16 @@ pub enum MppError {
     /// store indicates that the submitted transaction hash was previously consumed.
     /// Audited for issue #306; no mismatch found.
     HashAlreadyConsumed,
-    /// The credential failed one of the spec's verification checks.
+    /// A verification check failed: structural or signature validation of the
+    /// credential, transfer parameters (recipient, amount, asset), time bounds,
+    /// simulation effects, or server fee ceiling constraints.
+    ///
+    /// Call sites span `client.rs` and `server.rs`. All sites check conformance
+    /// with the MPP specification or simulation outcomes, except for one
+    /// deliberate fold-in: in sponsored pull mode, `server.rs` returns this
+    /// variant if the simulated fee exceeds the server's configured
+    /// `max_transaction_fee_stroops` ceiling, as no separate error variant exists.
+    /// Audited for issue #307.
     VerificationFailed {
         reason: String,
     },
