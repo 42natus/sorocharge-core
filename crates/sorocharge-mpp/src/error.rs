@@ -95,6 +95,12 @@ pub enum MppError {
         reason: String,
     },
     /// Verification succeeded but on-chain settlement failed.
+    ///
+    /// Returned by `settle_pull_mode` in `server.rs` when RPC transaction
+    /// submission or polling fails, or when the final on-chain transaction status
+    /// is not `"SUCCESS"`. All call sites execute strictly after all verification
+    /// checks have passed.
+    /// Audited for issue #308; no mismatch found.
     SettlementFailed {
         reason: String,
     },
