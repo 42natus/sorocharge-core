@@ -187,3 +187,23 @@ jobs:
         working-directory: crates/${{ matrix.crate }}/fuzz
         # Bounded per-target budget; a crash fails the job.
         run: cargo fuzz run ${{ matrix.target }} -- -max_total_time=300 -rss_limit_mb=4096
+
+  semver-checks:
+    # Detect unintended semver-breaking API changes against the last released tag.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust 1.98.1
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo-semver-checks
+        uses: obi1kenobi/cargo-semver-checks-action@v2
+        with:
+          baseline-rev: v0.1.2

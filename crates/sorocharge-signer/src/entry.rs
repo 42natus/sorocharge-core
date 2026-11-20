@@ -122,6 +122,7 @@ pub struct ChargeParams {
 /// }
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CredentialKind {
     /// `SOROBAN_CREDENTIALS_ADDRESS`: a single ed25519 signature over the
     /// legacy (pre-CAP-71) authorization preimage.
