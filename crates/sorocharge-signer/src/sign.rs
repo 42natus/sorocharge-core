@@ -15,6 +15,38 @@ use crate::error::SorochargeError;
 ///
 /// Implementations wrap a signing key already in memory (or a remote
 /// signing callback); this library does not manage keys.
+///
+/// # Examples
+///
+/// A signer can wrap an in-memory Ed25519 key. This deterministic key is for
+/// the example only; applications should supply their own key source.
+///
+/// ```
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// use ed25519_dalek::{Signer as DalekSigner, SigningKey};
+/// use sorocharge_signer::{Address, SorochargeError, Signer};
+/// use stellar_xdr::{AccountId, PublicKey, ScAddress, Uint256};
+///
+/// struct LocalSigner(SigningKey);
+///
+/// impl Signer for LocalSigner {
+///     fn sign_preimage(&self, preimage: &[u8]) -> Result<[u8; 64], SorochargeError> {
+///         Ok(self.0.sign(preimage).to_bytes())
+///     }
+///
+///     fn address(&self) -> Address {
+///         ScAddress::Account(AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(
+///             self.0.verifying_key().to_bytes(),
+///         ))))
+///     }
+/// }
+///
+/// let signer = LocalSigner(SigningKey::from_bytes(&[0x11; 32]));
+/// let signature = signer.sign_preimage(&[0x42; 32])?;
+/// assert_eq!(signature.len(), 64);
+/// # Ok(())
+/// # }
+/// ```
 pub trait Signer: Send + Sync {
     /// Signs `preimage` — the 32-byte sha256 digest of the entry's
     /// `HashIdPreimage` — and returns the raw 64-byte ed25519 signature.
@@ -28,6 +60,52 @@ pub trait Signer: Send + Sync {
 
 /// A `SorobanAuthorizationEntry` that carries a valid signature on the node
 /// matching its signer's address, ready to serialize to XDR and submit.
+///
+/// # Examples
+///
+/// Build and sign a transfer authorization, then inspect its XDR entry:
+///
+/// ```
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// use ed25519_dalek::{Signer as DalekSigner, SigningKey};
+/// use sorocharge_signer::{
+///     build_charge_entry, parse_address, sign_entry, Address, ChargeParams, CredentialKind,
+///     SorochargeError, Signer,
+/// };
+/// use stellar_xdr::{AccountId, PublicKey, ScAddress, Uint256};
+///
+/// struct LocalSigner(SigningKey);
+///
+/// impl Signer for LocalSigner {
+///     fn sign_preimage(&self, preimage: &[u8]) -> Result<[u8; 64], SorochargeError> {
+///         Ok(self.0.sign(preimage).to_bytes())
+///     }
+///
+///     fn address(&self) -> Address {
+///         ScAddress::Account(AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(
+///             self.0.verifying_key().to_bytes(),
+///         ))))
+///     }
+/// }
+///
+/// let signer = LocalSigner(SigningKey::from_bytes(&[0x11; 32]));
+/// let params = ChargeParams {
+///     asset_contract: parse_address("CAZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGGJH")?,
+///     amount: 1_500,
+///     payer: signer.address(),
+///     recipient: parse_address("GCQJVJPUPJTVTABP7FK7RXBNFIKKLSM5EO7JP6DECJ77SOBUKWSPB64N")?,
+///     valid_until_ledger: 1_000,
+/// };
+/// let unsigned = build_charge_entry(&params, CredentialKind::AddressV2)?;
+/// let signed = sign_entry(unsigned, &signer, "Test SDF Network ; September 2015")?;
+/// let xdr_entry = signed.as_xdr();
+/// assert!(matches!(
+///     &xdr_entry.credentials,
+///     stellar_xdr::SorobanCredentials::AddressV2(_)
+/// ));
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignedEntry(pub(crate) SorobanAuthorizationEntry);
 
@@ -53,8 +131,21 @@ impl SignedEntry {
     }
 }
 
+/// The 32-byte SHA-256 of a network passphrase — Stellar's `network_id`,
+/// the value binding every signed transaction and authorization entry to
+/// exactly one network.
+///
+/// Exported so the protocol crates' settlement paths derive the same value
+/// this crate bakes into each signing payload, rather than each carrying
+/// its own copy of the identical five lines (a drift risk this project's
+/// "one audited signing engine, not two" brief exists to prevent).
+#[must_use]
+pub fn network_id_hash(network_passphrase: &str) -> [u8; 32] {
+    Sha256::digest(network_passphrase.as_bytes()).into()
+}
+
 fn compute_network_id(network_passphrase: &str) -> Hash {
-    Hash(Sha256::digest(network_passphrase.as_bytes()).into())
+    Hash(network_id_hash(network_passphrase))
 }
 
 /// The `(nonce, signature_expiration_ledger, address-bound-to)` fields a
@@ -264,6 +355,50 @@ fn sign_with_delegates(
 /// address matches no signable node in `entry`, and
 /// [`SorochargeError::SigningFailed`] if `signer` itself fails, or is not
 /// an Ed25519 account address.
+///
+/// # Examples
+///
+/// ```
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// use ed25519_dalek::{Signer as DalekSigner, SigningKey};
+/// use sorocharge_signer::{
+///     build_charge_entry, parse_address, sign_entry, Address, ChargeParams, CredentialKind,
+///     SorochargeError, Signer,
+/// };
+/// use stellar_xdr::{AccountId, PublicKey, ScAddress, SorobanCredentials, Uint256};
+///
+/// struct LocalSigner(SigningKey);
+///
+/// impl Signer for LocalSigner {
+///     fn sign_preimage(&self, preimage: &[u8]) -> Result<[u8; 64], SorochargeError> {
+///         Ok(self.0.sign(preimage).to_bytes())
+///     }
+///
+///     fn address(&self) -> Address {
+///         ScAddress::Account(AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(
+///             self.0.verifying_key().to_bytes(),
+///         ))))
+///     }
+/// }
+///
+/// let signer = LocalSigner(SigningKey::from_bytes(&[0x11; 32]));
+/// let params = ChargeParams {
+///     asset_contract: parse_address("CAZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGGJH")?,
+///     amount: 1_500_000,
+///     payer: signer.address(),
+///     recipient: parse_address("GCQJVJPUPJTVTABP7FK7RXBNFIKKLSM5EO7JP6DECJ77SOBUKWSPB64N")?,
+///     valid_until_ledger: 100_000,
+/// };
+///
+/// let unsigned = build_charge_entry(&params, CredentialKind::AddressV2)?;
+/// let signed = sign_entry(unsigned, &signer, "Test SDF Network ; September 2015")?;
+/// assert!(matches!(
+///     &signed.as_xdr().credentials,
+///     SorobanCredentials::AddressV2(_)
+/// ));
+/// # Ok(())
+/// # }
+/// ```
 pub fn sign_entry(
     entry: UnsignedEntry,
     signer: &dyn Signer,
@@ -426,6 +561,35 @@ mod golden_vector_tests {
         assert_eq!(
             result.unwrap_err(),
             SorochargeError::NoMatchingCredentialNode
+        );
+    }
+}
+
+#[cfg(test)]
+mod network_id_tests {
+    use super::network_id_hash;
+
+    /// Locks the exported `network_id_hash` to Stellar's well-known network
+    /// IDs, so the protocol crates' settlement paths are provably hashing a
+    /// passphrase to the same value this crate already bakes into every
+    /// signing payload.
+    #[test]
+    fn matches_the_well_known_stellar_network_ids() {
+        assert_eq!(
+            network_id_hash("Test SDF Network ; September 2015"),
+            [
+                0xce, 0xe0, 0x30, 0x2d, 0x59, 0x84, 0x4d, 0x32, 0xbd, 0xca, 0x91, 0x5c, 0x82, 0x03,
+                0xdd, 0x44, 0xb3, 0x3f, 0xbb, 0x7e, 0xdc, 0x19, 0x05, 0x1e, 0xa3, 0x7a, 0xbe, 0xdf,
+                0x28, 0xec, 0xd4, 0x72,
+            ]
+        );
+        assert_eq!(
+            network_id_hash("Public Global Stellar Network ; September 2015"),
+            [
+                0x7a, 0xc3, 0x39, 0x97, 0x54, 0x4e, 0x31, 0x75, 0xd2, 0x66, 0xbd, 0x02, 0x24, 0x39,
+                0xb2, 0x2c, 0xdb, 0x16, 0x50, 0x8c, 0x01, 0x16, 0x3f, 0x26, 0xe5, 0xcb, 0x2a, 0x3e,
+                0x10, 0x45, 0xa9, 0x79,
+            ]
         );
     }
 }

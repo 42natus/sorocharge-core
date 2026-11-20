@@ -40,6 +40,43 @@ fn i128_from_scval(value: &ScVal) -> Option<i128> {
 /// Contract transfer; it's verified against a real testnet transaction in
 /// this crate's tests.
 ///
+/// # Examples
+///
+/// ```rust
+/// use serde::Deserialize;
+///
+/// #[derive(Deserialize)]
+/// struct Fixture {
+///     asset_contract: String,
+///     payer: String,
+///     recipient: String,
+///     amount: String,
+///     diagnostic_events_xdr_base64: Vec<String>,
+/// }
+///
+/// let fixture: Fixture = serde_json::from_str(include_str!(
+///     concat!(
+///         env!("CARGO_MANIFEST_DIR"),
+///         "/../../tests/golden_vectors/fixtures/sac_native_transfer_events.json"
+///     )
+/// ))
+/// .unwrap();
+///
+/// let asset = fixture.asset_contract.parse().unwrap();
+/// let payer = fixture.payer.parse().unwrap();
+/// let recipient = fixture.recipient.parse().unwrap();
+/// let amount = fixture.amount.parse().unwrap();
+///
+/// sorocharge_signer::verify_transfer_effects(
+///     &fixture.diagnostic_events_xdr_base64,
+///     &asset,
+///     &payer,
+///     &recipient,
+///     amount,
+/// )
+/// .unwrap();
+/// ```
+///
 /// # Errors
 ///
 /// - [`SorochargeError::SimulationEventsMalformed`] if an event does not
@@ -234,6 +271,17 @@ mod tests {
         assert_eq!(result, Err(SorochargeError::ExpectedTransferMissing));
     }
 
+    /// A simulation that emitted nothing at all is the one missing-transfer
+    /// input the fixture-based test above cannot construct: it must surface
+    /// as `ExpectedTransferMissing`, not as a malformed or unexpected event.
+    #[test]
+    fn rejects_a_simulation_with_no_events_at_all() {
+        let f = load();
+        let (asset, payer, recipient, amount) = expected(&f);
+        let result = verify_transfer_effects(&[], &asset, &payer, &recipient, amount);
+        assert_eq!(result, Err(SorochargeError::ExpectedTransferMissing));
+    }
+
     #[test]
     fn rejects_a_second_transfer_event() {
         let f = load();
@@ -302,5 +350,45 @@ mod tests {
             result,
             Err(SorochargeError::SimulationEventsMalformed { .. })
         ));
+    }
+
+    #[test]
+    fn rejects_a_transfer_event_lacking_from_to_address_topics() {
+        let f = load();
+        let (asset, payer, recipient, amount) = expected(&f);
+        let mut events = f.diagnostic_events_xdr_base64.clone();
+        let idx = events.iter().position(|e| is_transfer_event(e)).unwrap();
+        // Keep only the "transfer" symbol topic, dropping the from/to addresses.
+        events[idx] = edited_transfer(&events[idx], |ev| {
+            let Body::V0(v0) = &mut ev.event.body;
+            v0.topics = VecM::try_from(vec![v0.topics[0].clone()]).unwrap();
+        });
+        let result = verify_transfer_effects(&events, &asset, &payer, &recipient, amount);
+        assert_eq!(
+            result,
+            Err(SorochargeError::SimulationEventsMalformed {
+                reason: "transfer event lacks from/to address topics".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_a_transfer_event_whose_data_is_not_an_i128() {
+        let f = load();
+        let (asset, payer, recipient, amount) = expected(&f);
+        let mut events = f.diagnostic_events_xdr_base64.clone();
+        let idx = events.iter().position(|e| is_transfer_event(e)).unwrap();
+        // The transfer amount must be an ScVal::I128; anything else is malformed.
+        events[idx] = edited_transfer(&events[idx], |ev| {
+            let Body::V0(v0) = &mut ev.event.body;
+            v0.data = ScVal::I64(1_000_000);
+        });
+        let result = verify_transfer_effects(&events, &asset, &payer, &recipient, amount);
+        assert_eq!(
+            result,
+            Err(SorochargeError::SimulationEventsMalformed {
+                reason: "transfer event data is not an i128".to_string(),
+            })
+        );
     }
 }

@@ -1,20 +1,22 @@
 #!/usr/bin/env python3
-"""Creates GitHub issues for a wave backlog from its JSON file.
+"""Creates GitHub issues for a wave backlog from its JSON file, across one
+or more repos (each item names its own target repo via a "repo" field).
 
 Usage:
-    python3 scripts/create_wave_issues.py docs/WAVE2_BACKLOG.json [--apply]
+    python3 scripts/create_wave_issues.py docs/WAVE3_BACKLOG.json [--apply]
 
 Dry-run by default — prints what it would do and exits 0 without touching
 GitHub. Pass --apply to actually create issues.
 
 Safe to re-run: before creating anything, it reads every existing issue
-title in the target repo (open and closed) and skips any backlog entry
+title in each target repo (open and closed) and skips any backlog entry
 whose title already exists, since `gh issue create` is not idempotent and
 a re-run would otherwise duplicate the whole backlog.
 
-On a failure partway through, it reports the title it died on and how many
-issues were created before stopping, then exits non-zero — re-running the
-same command resumes from there, since already-created titles are skipped.
+On a failure partway through, it reports the title (and repo) it died on
+and how many issues were created before stopping, then exits non-zero —
+re-running the same command resumes from there, since already-created
+titles are skipped.
 """
 import argparse
 import json
@@ -23,25 +25,35 @@ import sys
 import time
 from pathlib import Path
 
-REPO = "sorocharge/sorocharge-core"
+DEFAULT_REPO = "sorocharge/sorocharge-core"
 PACE_SECONDS = 1.5
 
 REQUIRED_FIELDS = ["title", "complexity", "points", "area", "description", "why", "criteria", "guidance"]
-VALID_COMPLEXITY = {"high": 200, "medium": 150, "trivial": 100}
+# "trivial" (Wave 2's naming) and "low" (Wave 3's) are both the 100-point tier.
+VALID_COMPLEXITY = {"high": 200, "medium": 150, "trivial": 100, "low": 100}
+LOW_TIER = {"trivial", "low"}
+
+
+def repo_full_name(repo: str) -> str:
+    """Accepts either a bare repo name ("sorocharge-core") or an
+    "owner/repo" form already; the backlog JSON uses the bare form."""
+    return repo if "/" in repo else f"sorocharge/{repo}"
 
 
 def validate(items: list[dict]) -> list[str]:
     errors = []
-    seen_titles = set()
+    seen_titles_by_repo: dict[str, set[str]] = {}
     for i, it in enumerate(items):
         for f in REQUIRED_FIELDS:
             if f not in it or it[f] in (None, "", []):
                 errors.append(f"item {i}: missing or empty field '{f}'")
+        repo = it.get("repo", DEFAULT_REPO)
         title = it.get("title")
         if title:
-            if title in seen_titles:
-                errors.append(f"duplicate title in backlog: {title!r}")
-            seen_titles.add(title)
+            seen = seen_titles_by_repo.setdefault(repo, set())
+            if title in seen:
+                errors.append(f"duplicate title in backlog for {repo!r}: {title!r}")
+            seen.add(title)
         complexity = it.get("complexity")
         if complexity not in VALID_COMPLEXITY:
             errors.append(f"item {i} ({title!r}): invalid complexity {complexity!r}")
@@ -56,14 +68,14 @@ def validate(items: list[dict]) -> list[str]:
         guidance = it.get("guidance") or []
         if not (2 <= len(guidance) <= 4):
             errors.append(f"item {i} ({title!r}): guidance count {len(guidance)} not in [2,4]")
-        if complexity == "trivial":
+        if complexity in LOW_TIER:
             if not it.get("good_first_issue"):
-                errors.append(f"item {i} ({title!r}): trivial issue missing good_first_issue:true")
+                errors.append(f"item {i} ({title!r}): {complexity} issue missing good_first_issue:true")
             if not it.get("entry_point"):
-                errors.append(f"item {i} ({title!r}): trivial issue missing entry_point")
+                errors.append(f"item {i} ({title!r}): {complexity} issue missing entry_point")
         else:
             if it.get("good_first_issue"):
-                errors.append(f"item {i} ({title!r}): good_first_issue:true on a non-trivial issue")
+                errors.append(f"item {i} ({title!r}): good_first_issue:true on a non-{LOW_TIER} issue")
     return errors
 
 
@@ -83,6 +95,11 @@ def label_for(it: dict) -> list[str]:
         "perf": "enhancement", "ci": "enhancement", "research": "question",
     }.get(it["title"].split(":")[0].split("(")[0], "enhancement")
     labels.append(type_label)
+    # Complexity label: GitHub's own "good first issue" already exists;
+    # "high"/"medium"/"low" do not by default and must be created once
+    # per repo (see scripts/backfill_complexity_labels.py, which also
+    # backfills this onto any issue created before this label existed).
+    labels.append({"high": "high", "medium": "medium", "trivial": "low", "low": "low"}[it["complexity"]])
     if it.get("good_first_issue"):
         labels.append("good first issue")
     return labels
@@ -108,11 +125,29 @@ def body_for(it: dict) -> str:
     return "\n".join(lines)
 
 
+def ensure_complexity_labels_exist(repo: str) -> None:
+    """high/medium/low aren't in GitHub's default label set — create them
+    once if missing, so --label doesn't fail on a repo that's never run
+    this script before."""
+    colors = {"high": "d93f0b", "medium": "fbca04", "low": "0e8a16"}
+    result = subprocess.run(
+        ["gh", "label", "list", "--repo", repo, "--limit", "200", "--json", "name"],
+        capture_output=True, text=True, check=True,
+    )
+    existing = {row["name"] for row in json.loads(result.stdout)}
+    for name, color in colors.items():
+        if name not in existing:
+            subprocess.run(
+                ["gh", "label", "create", name, "--repo", repo, "--color", color,
+                 "--description", f"{name.capitalize()} complexity"],
+                capture_output=True, text=True, check=True,
+            )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("backlog_json")
     parser.add_argument("--apply", action="store_true", help="actually create issues (default: dry-run)")
-    parser.add_argument("--repo", default=REPO)
     args = parser.parse_args()
 
     items = json.loads(Path(args.backlog_json).read_text())
@@ -123,22 +158,32 @@ def main() -> int:
             print(f"  - {e}", file=sys.stderr)
         return 1
 
-    print(f"Validated {len(items)} issues ({sum(it['points'] for it in items)} points) against {args.repo}.")
+    for it in items:
+        it["_repo_full"] = repo_full_name(it.get("repo", DEFAULT_REPO))
+    repos = sorted({it["_repo_full"] for it in items})
 
-    try:
-        already = existing_titles(args.repo)
-    except subprocess.CalledProcessError as e:
-        print(f"Failed to list existing issues: {e.stderr}", file=sys.stderr)
-        return 1
+    print(f"Validated {len(items)} issues ({sum(it['points'] for it in items)} points) across {len(repos)} repo(s): {', '.join(repos)}.")
 
-    to_create = [it for it in items if it["title"] not in already]
+    if args.apply:
+        for repo in repos:
+            ensure_complexity_labels_exist(repo)
+
+    already_by_repo: dict[str, set[str]] = {}
+    for repo in repos:
+        try:
+            already_by_repo[repo] = existing_titles(repo)
+        except subprocess.CalledProcessError as e:
+            print(f"Failed to list existing issues for {repo}: {e.stderr}", file=sys.stderr)
+            return 1
+
+    to_create = [it for it in items if it["title"] not in already_by_repo[it["_repo_full"]]]
     skipped = len(items) - len(to_create)
-    print(f"{skipped} already exist in {args.repo} and will be skipped; {len(to_create)} to create.")
+    print(f"{skipped} already exist and will be skipped; {len(to_create)} to create.")
 
     if not args.apply:
         print("\nDRY RUN — no issues created. Re-run with --apply to create them.")
         for it in to_create[:10]:
-            print(f"  would create [{it['complexity']}/{it['points']}pt]: {it['title']}")
+            print(f"  would create [{it['_repo_full']} / {it['complexity']}/{it['points']}pt]: {it['title']}")
         if len(to_create) > 10:
             print(f"  ... and {len(to_create) - 10} more")
         return 0
@@ -147,19 +192,19 @@ def main() -> int:
     for it in to_create:
         labels = label_for(it)
         cmd = [
-            "gh", "issue", "create", "--repo", args.repo,
+            "gh", "issue", "create", "--repo", it["_repo_full"],
             "--title", it["title"], "--body", body_for(it),
             "--label", ",".join(labels),
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
-            print(f"\nFAILED on: {it['title']}", file=sys.stderr)
+            print(f"\nFAILED on [{it['_repo_full']}]: {it['title']}", file=sys.stderr)
             print(result.stderr, file=sys.stderr)
             print(f"\n{created} issue(s) created before this failure. Re-run the same command to resume "
                   f"— already-created titles will be skipped automatically.", file=sys.stderr)
             return 1
         created += 1
-        print(f"[{created}/{len(to_create)}] created: {it['title']}")
+        print(f"[{created}/{len(to_create)}] created in {it['_repo_full']}: {it['title']}")
         time.sleep(PACE_SECONDS)
 
     print(f"\nDone. {created} issue(s) created, {skipped} skipped (already existed).")

@@ -1,20 +1,22 @@
 <!-- GENERATED FILE — do not hand-edit.
-     Source of truth is docs/WAVE2_BACKLOG.json.
-     Regenerate with: python3 scripts/render_wave_backlog_md.py -->
+     Source of truth is the matching docs/WAVE<N>_BACKLOG.json.
+     Regenerate with: python3 scripts/render_wave_backlog_md.py <path-to-json> -->
 
-# Wave 2 backlog — sorocharge-core
+# Wave backlog
 
 **150 issues, 25000 points** — 80 high (200 pts each), 40 medium (150 pts each), 30 trivial (100 pts each).
 
+By repo: `sorocharge-core` (150)
+
 By area: `ci-release` (35), `mpp` (44), `signer` (32), `x402` (39)
 
-Every item below cites a specific file and gap found by reading this repository during this wave's survey, not a generic roadmap item. Complexity labels were assigned to hit an exact point quota per explicit maintainer instruction — they do not all correspond to real relative effort size.
+Every item below cites a specific file and gap found by reading the repositories during this wave's survey, not a generic roadmap item. Complexity labels were assigned to hit an exact point quota per explicit maintainer instruction — they do not all correspond to real relative effort size.
 
 ## High — 200 points (80)
 
 ### fix(signer): reject non-positive transfer amounts
 
-`area:signer`
+`repo:sorocharge-core` `area:signer`
 
 **Description.** ChargeParams.amount is i128 with no lower-bound check anywhere in the pipeline. build_charge_entry, verify_entry, and both protocol adapters' amount parsing all accept zero or negative amounts and build/verify a structurally valid but semantically nonsensical authorization entry.
 
@@ -33,7 +35,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### fix(mpp): unsponsored settle path never caps timeBounds.maxTime when the challenge omits expires
 
-`area:mpp`
+`repo:sorocharge-core` `area:mpp`
 
 **Description.** In MppServer::settle_pull_mode's unsponsored branch, the timeBounds.maxTime check only runs inside `if let Some(expires_at) = expires_at`. When the challenge has no expires field, the branch is skipped entirely — no cap is applied, unlike the parallel ledger-expiry check a few lines above, which correctly falls back to DEFAULT_CHALLENGE_EXPIRY_SECONDS.
 
@@ -50,7 +52,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### fix(x402): client's ledger-timeout computation carries no safety margin, unlike mpp's client
 
-`area:x402`
+`repo:sorocharge-core` `area:x402`
 
 **Description.** X402Client::get_with_payment sets valid_until_ledger to the full maxTimeoutSeconds allowance with no margin. MppClient::get_with_payment deliberately halves its allowance, with a comment explaining this is because slower-than-5s ledger closes can otherwise fail the facilitator's own ExpirationExceedsAllowance check — a failure mode already observed live.
 
@@ -67,7 +69,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### feat(signer): verify a Delegated entry's signatures against the account's real multisig/threshold policy
 
-`area:signer`
+`repo:sorocharge-core` `area:signer`
 
 **Description.** verify_entry's own doc comment admits: "A Delegated entry's account-contract-specific signing policy (how many delegates must sign, or which) is unknowable here — this only proves at least one attached signature is genuine." Add a path that queries the actual account's signer weights/thresholds (via simulation or ledger entry read) and verifies the attached signatures actually satisfy that policy, not just that one of them is cryptographically valid.
 
@@ -85,7 +87,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(signer): add cargo-fuzz harness for SignedEntry/UnsignedEntry XDR decoding
 
-`area:signer`
+`repo:sorocharge-core` `area:signer`
 
 **Description.** No fuzz target exists anywhere in the repo despite verify_entry decoding attacker-supplied SorobanAuthorizationEntry XDR from the network. Add a cargo-fuzz target that feeds arbitrary bytes through SignedEntry::from_xdr and verify_entry, asserting only that it never panics.
 
@@ -103,7 +105,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(x402): add cargo-fuzz harness for parse_payment_transaction's TransactionEnvelope decoding
 
-`area:x402`
+`repo:sorocharge-core` `area:x402`
 
 **Description.** parse_payment_transaction decodes an attacker-supplied TransactionEnvelope from the PAYMENT-SIGNATURE header/VerifyRequest body. No fuzz target exists for this parse path specifically.
 
@@ -120,7 +122,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(mpp): add cargo-fuzz harness for parse_payment_transaction's TransactionEnvelope decoding
 
-`area:mpp`
+`repo:sorocharge-core` `area:mpp`
 
 **Description.** mpp has its own, separately-implemented parse_payment_transaction (not shared with x402's) that decodes an attacker-supplied TransactionEnvelope in both pull-mode settlement and push-mode's get_transaction response parsing. No fuzz target exists for it.
 
@@ -137,7 +139,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(x402): unit-test Facilitator's safety checks against a mock RPC/HTTP layer
 
-`area:ci-release`
+`repo:sorocharge-core` `area:ci-release`
 
 **Description.** Facilitator::validate/verify/settle contains every facilitator-address-conflict check, the fee-ceiling enforcement, and the re-simulation gating — the single most safety-critical code path in the x402 crate — and has zero unit tests. stellar_rpc_client::Client is a concrete struct with no official test double, which is why this was never tested.
 
@@ -155,7 +157,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(mpp): unit-test MppServer's safety checks against a mock RPC/HTTP layer
 
-`area:ci-release`
+`repo:sorocharge-core` `area:ci-release`
 
 **Description.** MppServer::settle_credential/settle_pull_mode/settle_push_mode contains the server-address-conflict checks, fee-ceiling enforcement, timeBounds validation, and push/pull branching — and has zero unit tests, same gap as x402's Facilitator but a separate implementation with separate checks to cover (push mode has no x402 equivalent at all).
 
@@ -174,7 +176,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(x402): unit-test X402Client's full get_with_payment orchestration against a mock resource server
 
-`area:ci-release`
+`repo:sorocharge-core` `area:ci-release`
 
 **Description.** X402Client::get_with_payment — the full GET/402/decode/sign/retry flow — has zero unit tests. Only the lower-level tx.rs round-trip and manual live testnet runs exercise it.
 
@@ -191,7 +193,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(mpp): unit-test MppClient's full get_with_payment orchestration against a mock resource server
 
-`area:ci-release`
+`repo:sorocharge-core` `area:ci-release`
 
 **Description.** MppClient::get_with_payment — challenge parsing, sponsored/unsponsored branching, the margin calculation — has zero unit tests.
 
@@ -208,7 +210,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### refactor: deduplicate network_id_hash across x402::facilitator, mpp::client, and mpp::server
 
-`area:ci-release`
+`repo:sorocharge-core` `area:ci-release`
 
 **Description.** The identical sha256-of-passphrase helper fn network_id_hash is defined three separate times: crates/sorocharge-x402/src/facilitator.rs, crates/sorocharge-mpp/src/client.rs, and crates/sorocharge-mpp/src/server.rs.
 
@@ -225,7 +227,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### refactor: deduplicate caip2_for_passphrase between sorocharge-x402 and sorocharge-mpp
 
-`area:ci-release`
+`repo:sorocharge-core` `area:ci-release`
 
 **Description.** crates/sorocharge-x402/src/network.rs and crates/sorocharge-mpp/src/network.rs define byte-identical PUBNET_PASSPHRASE/TESTNET_PASSPHRASE constants and an identical caip2_for_passphrase match, differing only in which crate's Error type they return.
 
@@ -242,7 +244,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### chore: add cargo-deny to CI for dependency vulnerability and license scanning
 
-`area:ci-release`
+`repo:sorocharge-core` `area:ci-release`
 
 **Description.** Every dependency in the workspace is exact-pinned (= versions) with zero automated scanning for known CVEs or license issues in the resolved dependency tree.
 
@@ -259,7 +261,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### perf: add criterion benchmarks for sorocharge-signer's signing/verification hot path
 
-`area:ci-release`
+`repo:sorocharge-core` `area:ci-release`
 
 **Description.** No benchmark exists anywhere in the repo for build_charge_entry, sign_entry, or verify_entry, despite these sitting in a latency-sensitive facilitator/server request path.
 
@@ -276,7 +278,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### docs: write a THREAT_MODEL.md
 
-`area:ci-release`
+`repo:sorocharge-core` `area:ci-release`
 
 **Description.** No consolidated document lists what this library defends against (facilitator-address-conflict, signature-key-binding, replay via nonce, expiration-allowance bypass) versus what's explicitly out of scope (delegated-signer threshold policy today, MPP session mode, key custody).
 
@@ -293,7 +295,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### chore: add cargo-semver-checks to CI ahead of future crates.io publishes
 
-`area:ci-release`
+`repo:sorocharge-core` `area:ci-release`
 
 **Description.** Three tagged releases exist (v0.1.0, v0.1.1, v0.1.2) and crates.io publishing is already tracked (core#7), but nothing currently checks whether a change accidentally breaks semver compatibility before a publish.
 
@@ -310,7 +312,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### fix: audit lossy u32/i64 casts in the settlement fee and ledger-arithmetic paths
 
-`area:ci-release`
+`repo:sorocharge-core` `area:ci-release`
 
 **Description.** facilitator.rs, server.rs, and client.rs each contain multiple `u32::try_from(...).unwrap_or(u32::MAX)` and similar lossy casts converting fee/ledger-timeout calculations between i64/u64/u32. Each individually has a plausible safety argument, but none is documented, and they've never been collected and reviewed together.
 
@@ -327,7 +329,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### fix: no retry/backoff for transient HTTP failures in X402Client
 
-`area:x402`
+`repo:sorocharge-core` `area:x402`
 
 **Description.** X402Client::get_with_payment makes exactly two GET requests with no retry logic. A transient 5xx or connection blip on either request fails the whole payment flow immediately.
 
@@ -344,7 +346,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### fix: no retry/backoff for transient HTTP failures in MppClient
 
-`area:mpp`
+`repo:sorocharge-core` `area:mpp`
 
 **Description.** Same gap as X402Client: MppClient::get_with_payment has no retry logic for transient HTTP failures, and the unsponsored path adds two more RPC calls (get_account, simulate_transaction_envelope) with no retry either.
 
@@ -361,7 +363,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### refactor: Facilitator<'a> and MppServer<'a> borrow their signer/RPC client by reference, forcing lifetime gymnastics in typical embedding code
 
-`area:ci-release`
+`repo:sorocharge-core` `area:ci-release`
 
 **Description.** Both structs hold `&'a dyn Signer` and `&'a stellar_rpc_client::Client`. A typical axum/actix handler wants to share one Facilitator/MppServer across requests via Arc<Facilitator>, but a borrowed lifetime makes that awkward — the signer and RPC client have to outlive the facilitator for the entire process, which is usually fine but is an unusual API shape most Rust web services don't expect from a library.
 
@@ -378,7 +380,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(signer): add property-based (proptest) round-trip tests for XDR construction
 
-`area:signer`
+`repo:sorocharge-core` `area:signer`
 
 **Description.** Golden vectors prove specific fixed inputs byte-match the reference SDK, but nothing systematically checks that build_charge_entry's output round-trips through XDR encode/decode correctly across the input space (arbitrary valid addresses, amounts, ledger numbers, delegate counts).
 
@@ -395,7 +397,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(x402): add property-based (proptest) round-trip tests for transaction construction
 
-`area:x402`
+`repo:sorocharge-core` `area:x402`
 
 **Description.** build_payment_transaction_envelope / parse_payment_transaction have fixed-input tests but no property-based round-trip coverage across the input space.
 
@@ -412,7 +414,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(mpp): add property-based (proptest) round-trip tests for transaction construction
 
-`area:mpp`
+`repo:sorocharge-core` `area:mpp`
 
 **Description.** mpp's own, separately-implemented tx.rs has fixed-input tests but no property-based round-trip coverage, for both the sponsored and unsponsored transaction-building paths.
 
@@ -429,7 +431,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### research: confirm @stellar/mpp's channel/session-intent stability before any session-mode implementation
 
-`area:mpp`
+`repo:sorocharge-core` `area:mpp`
 
 **Description.** A live check during this wave found conflicting signals: the official MPP Session Guide documents a one-way-channel contract and prepare_commitment flow, but a separate community source claims the channel intent was non-functional and removed in @stellar/mpp 0.7.0. CLAUDE.md's original brief already flagged this spec as 'still being drafted' and deliberately deferred it. Produce a definitive, sourced answer: is it currently implementable against a real, stable SDK version or not.
 
@@ -446,7 +448,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(signer): add golden-vector coverage for a contract-address recipient
 
-`area:signer`
+`repo:sorocharge-core` `area:signer`
 
 **Description.** Every existing fixture uses a plain G... account as both payer and recipient. SEP-41 transfer's `to` argument can structurally be a contract address (ScAddress::Contract) — e.g. paying into a vault contract — and this path is never exercised by any test.
 
@@ -463,7 +465,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(signer): add golden-vector coverage for amount == 1 and amount == i128::MAX
 
-`area:signer`
+`repo:sorocharge-core` `area:signer`
 
 **Description.** No existing fixture exercises either numeric boundary of the i128 amount field — the smallest possible positive transfer and the largest representable value.
 
@@ -480,7 +482,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(signer): add golden-vector coverage for 3+ delegate signers
 
-`area:signer`
+`repo:sorocharge-core` `area:signer`
 
 **Description.** The only existing Delegated-credential fixture's test asserts `signers.len() >= 2` as its sole lower bound, with no evidence any fixture exercises more than the minimum 2 — the sort-order and duplicate-detection logic is never exercised at a larger scale.
 
@@ -497,7 +499,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### docs(signer): audit every public item for a 'why' explanation, not just a signature restatement
 
-`area:signer`
+`repo:sorocharge-core` `area:signer`
 
 **Description.** CLAUDE.md §8 requires every public function's doc comment to explain why it exists and what it guarantees, not just restate its signature. Audit sorocharge-signer's public API against that bar specifically (most already meet it; confirm all do).
 
@@ -514,7 +516,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### docs(x402): audit every public item for a 'why' explanation, not just a signature restatement
 
-`area:x402`
+`repo:sorocharge-core` `area:x402`
 
 **Description.** Same CLAUDE.md §8 compliance audit as the signer crate, scoped to sorocharge-x402's public exports.
 
@@ -531,7 +533,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### docs(mpp): audit every public item for a 'why' explanation, not just a signature restatement
 
-`area:mpp`
+`repo:sorocharge-core` `area:mpp`
 
 **Description.** Same CLAUDE.md §8 compliance audit as the signer crate, scoped to sorocharge-mpp's public exports.
 
@@ -548,7 +550,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### fix(x402): cap individual wire-type field lengths (description, resource.url) independent of overall response size
 
-`area:x402`
+`repo:sorocharge-core` `area:x402`
 
 **Description.** Even with an overall response-body size cap (tracked separately in this backlog), nothing bounds individual string fields like ResourceInfo.description or ResourceInfo.url within that budget — a resource server could spend the entire allowed response size on one field.
 
@@ -565,7 +567,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### fix(mpp): cap individual wire-type field lengths (description, realm) independent of overall response size
 
-`area:mpp`
+`repo:sorocharge-core` `area:mpp`
 
 **Description.** Same gap as x402's: Challenge.description, Challenge.realm, and ChargeRequest.description have no individual length bound.
 
@@ -582,7 +584,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### fix: bound response-body size in X402Client against a malicious/compromised resource server
 
-`area:x402`
+`repo:sorocharge-core` `area:x402`
 
 **Description.** X402Client's reqwest::Client has a request timeout but no response-body size limit. A malicious or compromised resource server can return an unbounded 402 or 200 response body.
 
@@ -599,7 +601,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### fix: bound response-body size in MppClient against a malicious/compromised resource server
 
-`area:mpp`
+`repo:sorocharge-core` `area:mpp`
 
 **Description.** Same gap as X402Client: MppClient's reqwest::Client has no response-body size limit.
 
@@ -616,7 +618,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### chore: re-verify every exact-pinned dependency version is still current
 
-`area:ci-release`
+`repo:sorocharge-core` `area:ci-release`
 
 **Description.** Root Cargo.toml exact-pins stellar-xdr, stellar-rpc-client, ed25519-dalek, reqwest, and others. These were verified against crates.io at the time CLAUDE.md's §0 was executed; real time has passed since, so a fresh check is overdue, per the project's own 'verify, don't assume' standard.
 
@@ -633,7 +635,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### chore: enforce the missing_docs lint in CI
 
-`area:ci-release`
+`repo:sorocharge-core` `area:ci-release`
 
 **Description.** CLAUDE.md §8 requires every public function to have a doc comment, but nothing in CI actually enforces this — a new public item with no doc comment would currently pass CI silently.
 
@@ -650,7 +652,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### ci: smoke-test examples against a local Stellar quickstart container instead of relying on manual testnet runs
 
-`area:ci-release`
+`repo:sorocharge-core` `area:ci-release`
 
 **Description.** CI builds the examples (`cargo build --all-targets`) but never runs them — every example has only ever been exercised by manual testnet runs during development, which leave no regression coverage in the repo.
 
@@ -667,7 +669,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### docs: add a crates.io README for each of the three crates
 
-`area:ci-release`
+`repo:sorocharge-core` `area:ci-release`
 
 **Description.** None of the three crates' Cargo.toml sets a readme field, so once published (core#7) none will render a README on crates.io — only the repo-root README exists.
 
@@ -684,7 +686,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### feat: instrument Facilitator and MppServer's settlement path with structured tracing spans
 
-`area:ci-release`
+`repo:sorocharge-core` `area:ci-release`
 
 **Description.** Zero usage of the tracing crate (or any logging) exists anywhere in the repo. The settlement path — the exact code an operator needs visibility into when a real payment fails in production — currently produces no structured signal at all.
 
@@ -701,7 +703,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test: cross-check sorocharge-signer's golden vectors against soroauth-go's own construction
 
-`area:signer`
+`repo:sorocharge-core` `area:signer`
 
 **Description.** CLAUDE.md states this project is 'the direct successor to soroauth-go' and explicitly asks to carry over its verification discipline. Golden vectors so far are checked against the JS reference SDK only — never cross-checked against the sibling Go library's own output for the same inputs.
 
@@ -718,7 +720,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(signer): assert SorochargeError::InvalidAddress is returned for a strkey that fails to decode into an ScAddress
 
-`area:signer`
+`repo:sorocharge-core` `area:signer`
 
 **Description.** No existing test in crates/sorocharge-signer currently asserts SorochargeError::InvalidAddress is the specific error returned for a strkey that fails to decode into an ScAddress — this error path exists in the code but has no regression coverage.
 
@@ -735,7 +737,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(signer): assert SorochargeError::UnsupportedCredentialType is returned for SOROBAN_CREDENTIALS_SOURCE_ACCOUNT passed to verify_entry
 
-`area:signer`
+`repo:sorocharge-core` `area:signer`
 
 **Description.** No existing test in crates/sorocharge-signer currently asserts SorochargeError::UnsupportedCredentialType is the specific error returned for SOROBAN_CREDENTIALS_SOURCE_ACCOUNT passed to verify_entry — this error path exists in the code but has no regression coverage.
 
@@ -752,7 +754,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(signer): assert SorochargeError::NoMatchingCredentialNode is returned for a Signer whose address matches no node in the entry being signed
 
-`area:signer`
+`repo:sorocharge-core` `area:signer`
 
 **Description.** No existing test in crates/sorocharge-signer currently asserts SorochargeError::NoMatchingCredentialNode is the specific error returned for a Signer whose address matches no node in the entry being signed — this error path exists in the code but has no regression coverage.
 
@@ -769,7 +771,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(signer): assert SorochargeError::SimulationEventsMalformed is returned for a simulation event that fails to decode or lacks expected topics/data
 
-`area:signer`
+`repo:sorocharge-core` `area:signer`
 
 **Description.** No existing test in crates/sorocharge-signer currently asserts SorochargeError::SimulationEventsMalformed is the specific error returned for a simulation event that fails to decode or lacks expected topics/data — this error path exists in the code but has no regression coverage.
 
@@ -786,7 +788,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(signer): assert SorochargeError::UnexpectedBalanceChange is returned for a simulation showing a balance change other than the expected payment
 
-`area:signer`
+`repo:sorocharge-core` `area:signer`
 
 **Description.** No existing test in crates/sorocharge-signer currently asserts SorochargeError::UnexpectedBalanceChange is the specific error returned for a simulation showing a balance change other than the expected payment — this error path exists in the code but has no regression coverage.
 
@@ -803,7 +805,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(signer): assert SorochargeError::ExpectedTransferMissing is returned for a simulation that doesn't show the expected transfer at all
 
-`area:signer`
+`repo:sorocharge-core` `area:signer`
 
 **Description.** No existing test in crates/sorocharge-signer currently asserts SorochargeError::ExpectedTransferMissing is the specific error returned for a simulation that doesn't show the expected transfer at all — this error path exists in the code but has no regression coverage.
 
@@ -820,7 +822,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(signer): assert SorochargeError::SigningFailed is returned for a Signer implementation that returns an error, and a non-Ed25519-account signer address
 
-`area:signer`
+`repo:sorocharge-core` `area:signer`
 
 **Description.** No existing test in crates/sorocharge-signer currently asserts SorochargeError::SigningFailed is the specific error returned for a Signer implementation that returns an error, and a non-Ed25519-account signer address — this error path exists in the code but has no regression coverage.
 
@@ -837,7 +839,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(signer): assert SorochargeError::XdrEncodingFailed is returned for a value that doesn't fit its XDR-constrained shape
 
-`area:signer`
+`repo:sorocharge-core` `area:signer`
 
 **Description.** No existing test in crates/sorocharge-signer currently asserts SorochargeError::XdrEncodingFailed is the specific error returned for a value that doesn't fit its XDR-constrained shape — this error path exists in the code but has no regression coverage.
 
@@ -854,7 +856,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(x402): assert X402Error::HttpRequestFailed is returned for the underlying HTTP request failing (connection/TLS/timeout)
 
-`area:x402`
+`repo:sorocharge-core` `area:x402`
 
 **Description.** No existing test in crates/sorocharge-x402 asserts X402Error::HttpRequestFailed is returned for the underlying HTTP request failing (connection/TLS/timeout). All 16 of X402Error's variants currently have zero direct unit-test coverage — only live testnet runs during development have exercised any of them.
 
@@ -872,7 +874,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(x402): assert X402Error::UnexpectedStatus is returned for a resource responding with neither 402 nor 200
 
-`area:x402`
+`repo:sorocharge-core` `area:x402`
 
 **Description.** No existing test in crates/sorocharge-x402 asserts X402Error::UnexpectedStatus is returned for a resource responding with neither 402 nor 200. All 16 of X402Error's variants currently have zero direct unit-test coverage — only live testnet runs during development have exercised any of them.
 
@@ -890,7 +892,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(x402): assert X402Error::MissingPaymentRequiredHeader is returned for a 402 response with no PAYMENT-REQUIRED header
 
-`area:x402`
+`repo:sorocharge-core` `area:x402`
 
 **Description.** No existing test in crates/sorocharge-x402 asserts X402Error::MissingPaymentRequiredHeader is returned for a 402 response with no PAYMENT-REQUIRED header. All 16 of X402Error's variants currently have zero direct unit-test coverage — only live testnet runs during development have exercised any of them.
 
@@ -908,7 +910,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(x402): assert X402Error::InvalidPaymentRequired is returned for a PAYMENT-REQUIRED header that doesn't base64/JSON-decode
 
-`area:x402`
+`repo:sorocharge-core` `area:x402`
 
 **Description.** No existing test in crates/sorocharge-x402 asserts X402Error::InvalidPaymentRequired is returned for a PAYMENT-REQUIRED header that doesn't base64/JSON-decode. All 16 of X402Error's variants currently have zero direct unit-test coverage — only live testnet runs during development have exercised any of them.
 
@@ -926,7 +928,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(x402): assert X402Error::NoAcceptablePaymentRequirements is returned for no accepts[] entry matching the client's scheme/network
 
-`area:x402`
+`repo:sorocharge-core` `area:x402`
 
 **Description.** No existing test in crates/sorocharge-x402 asserts X402Error::NoAcceptablePaymentRequirements is returned for no accepts[] entry matching the client's scheme/network. All 16 of X402Error's variants currently have zero direct unit-test coverage — only live testnet runs during development have exercised any of them.
 
@@ -944,7 +946,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(x402): assert X402Error::UnsupportedNetwork is returned for a network identifier with no CAIP-2 mapping
 
-`area:x402`
+`repo:sorocharge-core` `area:x402`
 
 **Description.** No existing test in crates/sorocharge-x402 asserts X402Error::UnsupportedNetwork is returned for a network identifier with no CAIP-2 mapping. All 16 of X402Error's variants currently have zero direct unit-test coverage — only live testnet runs during development have exercised any of them.
 
@@ -962,7 +964,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(x402): assert X402Error::Signing is returned for sorocharge-signer failing to build or sign a charge entry
 
-`area:x402`
+`repo:sorocharge-core` `area:x402`
 
 **Description.** No existing test in crates/sorocharge-x402 asserts X402Error::Signing is returned for sorocharge-signer failing to build or sign a charge entry. All 16 of X402Error's variants currently have zero direct unit-test coverage — only live testnet runs during development have exercised any of them.
 
@@ -980,7 +982,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(x402): assert X402Error::XdrEncodingFailed is returned for a value that doesn't fit its XDR-constrained shape
 
-`area:x402`
+`repo:sorocharge-core` `area:x402`
 
 **Description.** No existing test in crates/sorocharge-x402 asserts X402Error::XdrEncodingFailed is returned for a value that doesn't fit its XDR-constrained shape. All 16 of X402Error's variants currently have zero direct unit-test coverage — only live testnet runs during development have exercised any of them.
 
@@ -998,7 +1000,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(x402): assert X402Error::InvalidPaymentPayload is returned for a credential/verify-request payload that doesn't deserialize into the expected shape
 
-`area:x402`
+`repo:sorocharge-core` `area:x402`
 
 **Description.** No existing test in crates/sorocharge-x402 asserts X402Error::InvalidPaymentPayload is returned for a credential/verify-request payload that doesn't deserialize into the expected shape. All 16 of X402Error's variants currently have zero direct unit-test coverage — only live testnet runs during development have exercised any of them.
 
@@ -1016,7 +1018,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(x402): assert X402Error::XdrDecodingFailed is returned for a submitted transaction's XDR failing to decode
 
-`area:x402`
+`repo:sorocharge-core` `area:x402`
 
 **Description.** No existing test in crates/sorocharge-x402 asserts X402Error::XdrDecodingFailed is returned for a submitted transaction's XDR failing to decode. All 16 of X402Error's variants currently have zero direct unit-test coverage — only live testnet runs during development have exercised any of them.
 
@@ -1034,7 +1036,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(x402): assert X402Error::UnexpectedTransactionShape is returned for a transaction that doesn't authorize a single bare SEP-41 transfer
 
-`area:x402`
+`repo:sorocharge-core` `area:x402`
 
 **Description.** No existing test in crates/sorocharge-x402 asserts X402Error::UnexpectedTransactionShape is returned for a transaction that doesn't authorize a single bare SEP-41 transfer. All 16 of X402Error's variants currently have zero direct unit-test coverage — only live testnet runs during development have exercised any of them.
 
@@ -1052,7 +1054,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(x402): assert X402Error::ForbiddenCredentialType is returned for sorobanCredentialsSourceAccount or sorobanCredentialsAddressWithDelegates on the exact scheme
 
-`area:x402`
+`repo:sorocharge-core` `area:x402`
 
 **Description.** No existing test in crates/sorocharge-x402 asserts X402Error::ForbiddenCredentialType is returned for sorobanCredentialsSourceAccount or sorobanCredentialsAddressWithDelegates on the exact scheme. All 16 of X402Error's variants currently have zero direct unit-test coverage — only live testnet runs during development have exercised any of them.
 
@@ -1070,7 +1072,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(x402): assert X402Error::FacilitatorAddressConflict is returned for the facilitator's own address appearing as source/from/an authorization entry
 
-`area:x402`
+`repo:sorocharge-core` `area:x402`
 
 **Description.** No existing test in crates/sorocharge-x402 asserts X402Error::FacilitatorAddressConflict is returned for the facilitator's own address appearing as source/from/an authorization entry. All 16 of X402Error's variants currently have zero direct unit-test coverage — only live testnet runs during development have exercised any of them.
 
@@ -1088,7 +1090,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(x402): assert X402Error::RpcFailed is returned for a Stellar RPC call failing
 
-`area:x402`
+`repo:sorocharge-core` `area:x402`
 
 **Description.** No existing test in crates/sorocharge-x402 asserts X402Error::RpcFailed is returned for a Stellar RPC call failing. All 16 of X402Error's variants currently have zero direct unit-test coverage — only live testnet runs during development have exercised any of them.
 
@@ -1106,7 +1108,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(x402): assert X402Error::FeeExceedsCeiling is returned for a settlement fee exceeding the configured safety ceiling
 
-`area:x402`
+`repo:sorocharge-core` `area:x402`
 
 **Description.** No existing test in crates/sorocharge-x402 asserts X402Error::FeeExceedsCeiling is returned for a settlement fee exceeding the configured safety ceiling. All 16 of X402Error's variants currently have zero direct unit-test coverage — only live testnet runs during development have exercised any of them.
 
@@ -1124,7 +1126,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(x402): assert X402Error::SettlementFailed is returned for verification succeeding but on-chain settlement failing
 
-`area:x402`
+`repo:sorocharge-core` `area:x402`
 
 **Description.** No existing test in crates/sorocharge-x402 asserts X402Error::SettlementFailed is returned for verification succeeding but on-chain settlement failing. All 16 of X402Error's variants currently have zero direct unit-test coverage — only live testnet runs during development have exercised any of them.
 
@@ -1142,7 +1144,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(mpp): assert MppError::HttpRequestFailed is returned for the underlying HTTP request failing
 
-`area:mpp`
+`repo:sorocharge-core` `area:mpp`
 
 **Description.** No existing test in crates/sorocharge-mpp asserts MppError::HttpRequestFailed is returned for the underlying HTTP request failing. All 21 of MppError's variants currently have zero direct unit-test coverage.
 
@@ -1160,7 +1162,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(mpp): assert MppError::UnexpectedStatus is returned for a resource responding with neither 402 nor 200
 
-`area:mpp`
+`repo:sorocharge-core` `area:mpp`
 
 **Description.** No existing test in crates/sorocharge-mpp asserts MppError::UnexpectedStatus is returned for a resource responding with neither 402 nor 200. All 21 of MppError's variants currently have zero direct unit-test coverage.
 
@@ -1178,7 +1180,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(mpp): assert MppError::MissingChallenge is returned for a 402 response with no WWW-Authenticate: Payment header
 
-`area:mpp`
+`repo:sorocharge-core` `area:mpp`
 
 **Description.** No existing test in crates/sorocharge-mpp asserts MppError::MissingChallenge is returned for a 402 response with no WWW-Authenticate: Payment header. All 21 of MppError's variants currently have zero direct unit-test coverage.
 
@@ -1196,7 +1198,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(mpp): assert MppError::InvalidChallenge is returned for auth-params that don't parse or omit a required field
 
-`area:mpp`
+`repo:sorocharge-core` `area:mpp`
 
 **Description.** No existing test in crates/sorocharge-mpp asserts MppError::InvalidChallenge is returned for auth-params that don't parse or omit a required field. All 21 of MppError's variants currently have zero direct unit-test coverage.
 
@@ -1214,7 +1216,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(mpp): assert MppError::UnsupportedMethod is returned for a challenge naming a method other than stellar
 
-`area:mpp`
+`repo:sorocharge-core` `area:mpp`
 
 **Description.** No existing test in crates/sorocharge-mpp asserts MppError::UnsupportedMethod is returned for a challenge naming a method other than stellar. All 21 of MppError's variants currently have zero direct unit-test coverage.
 
@@ -1232,7 +1234,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(mpp): assert MppError::UnsupportedIntent is returned for a challenge naming an intent other than charge
 
-`area:mpp`
+`repo:sorocharge-core` `area:mpp`
 
 **Description.** No existing test in crates/sorocharge-mpp asserts MppError::UnsupportedIntent is returned for a challenge naming an intent other than charge. All 21 of MppError's variants currently have zero direct unit-test coverage.
 
@@ -1250,7 +1252,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(mpp): assert MppError::InvalidChargeRequest is returned for a request field that doesn't base64url-decode to valid JSON
 
-`area:mpp`
+`repo:sorocharge-core` `area:mpp`
 
 **Description.** No existing test in crates/sorocharge-mpp asserts MppError::InvalidChargeRequest is returned for a request field that doesn't base64url-decode to valid JSON. All 21 of MppError's variants currently have zero direct unit-test coverage.
 
@@ -1268,7 +1270,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(mpp): assert MppError::UnsupportedNetwork is returned for a network identifier with no CAIP-2 mapping
 
-`area:mpp`
+`repo:sorocharge-core` `area:mpp`
 
 **Description.** No existing test in crates/sorocharge-mpp asserts MppError::UnsupportedNetwork is returned for a network identifier with no CAIP-2 mapping. All 21 of MppError's variants currently have zero direct unit-test coverage.
 
@@ -1286,7 +1288,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(signer): add a reference-SDK-signed fixture and acceptance test for AddressV2 credentials
 
-`area:signer`
+`repo:sorocharge-core` `area:signer`
 
 **Description.** Only legacy_transfer_signed.json exists among the committed fixtures — verify_entry's 'accepts real reference-SDK output, not just entries this library produced itself' proof (see its test doc comment) currently only covers the Legacy credential path. address_v2_transfer.json exists but is unsigned.
 
@@ -1303,7 +1305,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(signer): add a reference-SDK-signed fixture and acceptance test for Delegated credentials
 
-`area:signer`
+`repo:sorocharge-core` `area:signer`
 
 **Description.** Same gap as the AddressV2 fixture issue, for the Delegated credential kind: delegated_transfer.json exists but is unsigned, and no signed counterpart exists.
 
@@ -1320,7 +1322,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### chore: re-verify the pinned stellar-xdr/stellar-rpc-client versions still match Stellar's current live protocol version
 
-`area:ci-release`
+`repo:sorocharge-core` `area:ci-release`
 
 **Description.** CLAUDE.md §0 originally required checking stellar-xdr/stellar-rpc-client against the network's live protocol version via getLedger before any code was written. Real time has passed since; this is that check's periodic re-run, specifically for protocol-number alignment rather than just crate-version currency.
 
@@ -1337,7 +1339,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### chore: periodically re-validate verify_transfer_effects' assumed event shape against a live testnet transaction
 
-`area:ci-release`
+`repo:sorocharge-core` `area:ci-release`
 
 **Description.** verify_transfer_effects' own module doc states its transfer-event shape was 'verified against a real testnet transaction's event shape, not the CAP text, which the host doesn't always match exactly.' Nothing currently re-checks that this assumption still holds after a future protocol upgrade.
 
@@ -1354,7 +1356,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### docs(signer): document whether Signer implementations need to be constant-time
 
-`area:signer`
+`repo:sorocharge-core` `area:signer`
 
 **Description.** The Signer trait's doc comment describes its interface but says nothing about timing side-channels — relevant because this trait signs payment authorizations, a context where a timing leak in a custom Signer implementation could matter.
 
@@ -1371,7 +1373,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### docs: add a plain-language troubleshooting FAQ for verify_entry's error variants
 
-`area:ci-release`
+`repo:sorocharge-core` `area:ci-release`
 
 **Description.** sorocharge-signer alone has 18 distinct SorochargeError variants (by design, per CLAUDE.md's no-catch-all rule) — correct for the library's own discipline, but with no single plain-language reference for an integrator who just got PayerMismatch and needs to know what to actually check.
 
@@ -1388,7 +1390,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(signer): add a regression test locking verify_entry's check order to its documented sequence
 
-`area:signer`
+`repo:sorocharge-core` `area:signer`
 
 **Description.** verify_entry's doc comment numbers its checks 1 through 8 in a specific order (expiry, allowance, shape, asset, payer, amount, recipient, signature). No test currently proves the code actually runs them in that order — a future refactor could silently reorder two checks and no test would catch it.
 
@@ -1407,7 +1409,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### chore: add a rust-toolchain.toml
 
-`area:ci-release`
+`repo:sorocharge-core` `area:ci-release`
 
 **Description.** CI pins Rust 1.98.1 explicitly in .github/workflows/ci.yml, but nothing pins it for local development — a contributor's `cargo build` uses whatever toolchain they happen to have installed.
 
@@ -1424,7 +1426,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### chore: add eslint/prettier for tests/golden_vectors/generate.mjs
 
-`area:ci-release`
+`repo:sorocharge-core` `area:ci-release`
 
 **Description.** tests/golden_vectors/generate.mjs is committed JavaScript with zero linting or formatting enforcement, unlike the Rust side's cargo fmt/clippy discipline.
 
@@ -1441,7 +1443,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### chore: add keywords and categories to each crate's Cargo.toml for crates.io discoverability
 
-`area:ci-release`
+`repo:sorocharge-core` `area:ci-release`
 
 **Description.** None of the three crates sets keywords or categories, which crates.io uses for search and category-browsing — once published, these crates will be essentially unsearchable by topic.
 
@@ -1458,7 +1460,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### docs: add CI/license/docs badges to the README
 
-`area:ci-release`
+`repo:sorocharge-core` `area:ci-release`
 
 **Description.** README.md has zero badges — no CI status, no license, no crates.io version (once published) — despite the project having a real passing CI workflow and an Apache-2.0 LICENSE file to point to right now.
 
@@ -1475,7 +1477,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### chore: add [profile.release] optimization settings to the workspace
 
-`area:ci-release`
+`repo:sorocharge-core` `area:ci-release`
 
 **Description.** Root Cargo.toml has no [profile.release] section — a facilitator/server embedding this library in production gets whatever Cargo's own release defaults are, with no deliberate choice made for a latency-sensitive signing/verification workload.
 
@@ -1492,7 +1494,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### fix: SorochargeError derives Clone but X402Error/MppError don't — inconsistent error API across crates
 
-`area:ci-release`
+`repo:sorocharge-core` `area:ci-release`
 
 **Description.** crates/sorocharge-signer/src/error.rs's SorochargeError derives Clone (alongside Debug/PartialEq/Eq); X402Error and MppError do not derive it, an inconsistency in the error-type API shape across the three crates that otherwise follow an identical pattern.
 
@@ -1509,7 +1511,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### docs: add a runnable doctest example to build_charge_entry
 
-`area:signer`
+`repo:sorocharge-core` `area:signer`
 
 **Description.** build_charge_entry in crates/sorocharge-signer/src/entry.rs has a doc comment describing it, but no `# Examples` section with a runnable code block — `cargo test --doc` currently exercises zero doctests anywhere in the workspace.
 
@@ -1526,7 +1528,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### docs: add a runnable doctest example to ChargeParams
 
-`area:signer`
+`repo:sorocharge-core` `area:signer`
 
 **Description.** ChargeParams in crates/sorocharge-signer/src/entry.rs has a doc comment describing it, but no `# Examples` section with a runnable code block — `cargo test --doc` currently exercises zero doctests anywhere in the workspace.
 
@@ -1543,7 +1545,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### docs: add a runnable doctest example to CredentialKind
 
-`area:signer`
+`repo:sorocharge-core` `area:signer`
 
 **Description.** CredentialKind in crates/sorocharge-signer/src/entry.rs has a doc comment describing it, but no `# Examples` section with a runnable code block — `cargo test --doc` currently exercises zero doctests anywhere in the workspace.
 
@@ -1560,7 +1562,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### docs: add a runnable doctest example to UnsignedEntry
 
-`area:signer`
+`repo:sorocharge-core` `area:signer`
 
 **Description.** UnsignedEntry in crates/sorocharge-signer/src/entry.rs has a doc comment describing it, but no `# Examples` section with a runnable code block — `cargo test --doc` currently exercises zero doctests anywhere in the workspace.
 
@@ -1577,7 +1579,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### docs: add a runnable doctest example to sign_entry
 
-`area:signer`
+`repo:sorocharge-core` `area:signer`
 
 **Description.** sign_entry in crates/sorocharge-signer/src/sign.rs has a doc comment describing it, but no `# Examples` section with a runnable code block — `cargo test --doc` currently exercises zero doctests anywhere in the workspace.
 
@@ -1594,7 +1596,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### docs: add a runnable doctest example to Signer
 
-`area:signer`
+`repo:sorocharge-core` `area:signer`
 
 **Description.** Signer in crates/sorocharge-signer/src/sign.rs has a doc comment describing it, but no `# Examples` section with a runnable code block — `cargo test --doc` currently exercises zero doctests anywhere in the workspace.
 
@@ -1611,7 +1613,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### docs: add a runnable doctest example to SignedEntry
 
-`area:signer`
+`repo:sorocharge-core` `area:signer`
 
 **Description.** SignedEntry in crates/sorocharge-signer/src/sign.rs has a doc comment describing it, but no `# Examples` section with a runnable code block — `cargo test --doc` currently exercises zero doctests anywhere in the workspace.
 
@@ -1628,7 +1630,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### docs: add a runnable doctest example to verify_entry
 
-`area:signer`
+`repo:sorocharge-core` `area:signer`
 
 **Description.** verify_entry in crates/sorocharge-signer/src/verify.rs has a doc comment describing it, but no `# Examples` section with a runnable code block — `cargo test --doc` currently exercises zero doctests anywhere in the workspace.
 
@@ -1645,7 +1647,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### docs: add a runnable doctest example to verify_transfer_effects
 
-`area:signer`
+`repo:sorocharge-core` `area:signer`
 
 **Description.** verify_transfer_effects in crates/sorocharge-signer/src/effects.rs has a doc comment describing it, but no `# Examples` section with a runnable code block — `cargo test --doc` currently exercises zero doctests anywhere in the workspace.
 
@@ -1662,7 +1664,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### docs: add a runnable doctest example to X402Client::new
 
-`area:x402`
+`repo:sorocharge-core` `area:x402`
 
 **Description.** X402Client::new in crates/sorocharge-x402/src/client.rs has a doc comment describing it, but no `# Examples` section with a runnable code block — `cargo test --doc` currently exercises zero doctests anywhere in the workspace.
 
@@ -1679,7 +1681,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### docs: add a runnable doctest example to X402Client::get_with_payment
 
-`area:x402`
+`repo:sorocharge-core` `area:x402`
 
 **Description.** X402Client::get_with_payment in crates/sorocharge-x402/src/client.rs has a doc comment describing it, but no `# Examples` section with a runnable code block — `cargo test --doc` currently exercises zero doctests anywhere in the workspace.
 
@@ -1696,7 +1698,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### docs: add a runnable doctest example to Facilitator::new
 
-`area:x402`
+`repo:sorocharge-core` `area:x402`
 
 **Description.** Facilitator::new in crates/sorocharge-x402/src/facilitator.rs has a doc comment describing it, but no `# Examples` section with a runnable code block — `cargo test --doc` currently exercises zero doctests anywhere in the workspace.
 
@@ -1713,7 +1715,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### docs: add a runnable doctest example to Facilitator::verify
 
-`area:x402`
+`repo:sorocharge-core` `area:x402`
 
 **Description.** Facilitator::verify in crates/sorocharge-x402/src/facilitator.rs has a doc comment describing it, but no `# Examples` section with a runnable code block — `cargo test --doc` currently exercises zero doctests anywhere in the workspace.
 
@@ -1730,7 +1732,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### docs: add a runnable doctest example to Facilitator::settle
 
-`area:x402`
+`repo:sorocharge-core` `area:x402`
 
 **Description.** Facilitator::settle in crates/sorocharge-x402/src/facilitator.rs has a doc comment describing it, but no `# Examples` section with a runnable code block — `cargo test --doc` currently exercises zero doctests anywhere in the workspace.
 
@@ -1747,7 +1749,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### docs: add a runnable doctest example to Facilitator::supported
 
-`area:x402`
+`repo:sorocharge-core` `area:x402`
 
 **Description.** Facilitator::supported in crates/sorocharge-x402/src/facilitator.rs has a doc comment describing it, but no `# Examples` section with a runnable code block — `cargo test --doc` currently exercises zero doctests anywhere in the workspace.
 
@@ -1764,7 +1766,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### docs: add a runnable doctest example to FacilitatorConfig
 
-`area:x402`
+`repo:sorocharge-core` `area:x402`
 
 **Description.** FacilitatorConfig in crates/sorocharge-x402/src/facilitator.rs has a doc comment describing it, but no `# Examples` section with a runnable code block — `cargo test --doc` currently exercises zero doctests anywhere in the workspace.
 
@@ -1781,7 +1783,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(mpp): assert MppError::ChallengeExpired is returned for a challenge already past its expires timestamp
 
-`area:mpp`
+`repo:sorocharge-core` `area:mpp`
 
 **Description.** No existing test in crates/sorocharge-mpp asserts MppError::ChallengeExpired is returned for a challenge already past its expires timestamp. All 21 of MppError's variants currently have zero direct unit-test coverage.
 
@@ -1799,7 +1801,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(mpp): assert MppError::Signing is returned for sorocharge-signer failing to build or sign a charge entry
 
-`area:mpp`
+`repo:sorocharge-core` `area:mpp`
 
 **Description.** No existing test in crates/sorocharge-mpp asserts MppError::Signing is returned for sorocharge-signer failing to build or sign a charge entry. All 21 of MppError's variants currently have zero direct unit-test coverage.
 
@@ -1817,7 +1819,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(mpp): assert MppError::XdrEncodingFailed is returned for a value that doesn't fit its XDR-constrained shape
 
-`area:mpp`
+`repo:sorocharge-core` `area:mpp`
 
 **Description.** No existing test in crates/sorocharge-mpp asserts MppError::XdrEncodingFailed is returned for a value that doesn't fit its XDR-constrained shape. All 21 of MppError's variants currently have zero direct unit-test coverage.
 
@@ -1835,7 +1837,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(mpp): assert MppError::XdrDecodingFailed is returned for a submitted transaction's XDR failing to decode
 
-`area:mpp`
+`repo:sorocharge-core` `area:mpp`
 
 **Description.** No existing test in crates/sorocharge-mpp asserts MppError::XdrDecodingFailed is returned for a submitted transaction's XDR failing to decode. All 21 of MppError's variants currently have zero direct unit-test coverage.
 
@@ -1853,7 +1855,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(mpp): assert MppError::InvalidCredential is returned for a credential whose JSON doesn't match the expected shape
 
-`area:mpp`
+`repo:sorocharge-core` `area:mpp`
 
 **Description.** No existing test in crates/sorocharge-mpp asserts MppError::InvalidCredential is returned for a credential whose JSON doesn't match the expected shape. All 21 of MppError's variants currently have zero direct unit-test coverage.
 
@@ -1871,7 +1873,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(mpp): assert MppError::UnexpectedTransactionShape is returned for a transaction that doesn't authorize a single bare SEP-41 transfer
 
-`area:mpp`
+`repo:sorocharge-core` `area:mpp`
 
 **Description.** No existing test in crates/sorocharge-mpp asserts MppError::UnexpectedTransactionShape is returned for a transaction that doesn't authorize a single bare SEP-41 transfer. All 21 of MppError's variants currently have zero direct unit-test coverage.
 
@@ -1889,7 +1891,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(mpp): assert MppError::ForbiddenCredentialType is returned for a pull-mode credential type other than legacy sorobanCredentialsAddress
 
-`area:mpp`
+`repo:sorocharge-core` `area:mpp`
 
 **Description.** No existing test in crates/sorocharge-mpp asserts MppError::ForbiddenCredentialType is returned for a pull-mode credential type other than legacy sorobanCredentialsAddress. All 21 of MppError's variants currently have zero direct unit-test coverage.
 
@@ -1907,7 +1909,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(mpp): assert MppError::PushModeForbidsFeePayer is returned for a hash-type credential against a feePayer:true challenge
 
-`area:mpp`
+`repo:sorocharge-core` `area:mpp`
 
 **Description.** No existing test in crates/sorocharge-mpp asserts MppError::PushModeForbidsFeePayer is returned for a hash-type credential against a feePayer:true challenge. All 21 of MppError's variants currently have zero direct unit-test coverage.
 
@@ -1925,7 +1927,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(mpp): assert MppError::ServerAddressConflict is returned for the server's own address appearing where the safety checks forbid it
 
-`area:mpp`
+`repo:sorocharge-core` `area:mpp`
 
 **Description.** No existing test in crates/sorocharge-mpp asserts MppError::ServerAddressConflict is returned for the server's own address appearing where the safety checks forbid it. All 21 of MppError's variants currently have zero direct unit-test coverage.
 
@@ -1943,7 +1945,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(mpp): assert MppError::RpcFailed is returned for a Stellar RPC call failing
 
-`area:mpp`
+`repo:sorocharge-core` `area:mpp`
 
 **Description.** No existing test in crates/sorocharge-mpp asserts MppError::RpcFailed is returned for a Stellar RPC call failing. All 21 of MppError's variants currently have zero direct unit-test coverage.
 
@@ -1961,7 +1963,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(mpp): assert MppError::HashAlreadyConsumed is returned for a pushed transaction hash that's already been consumed
 
-`area:mpp`
+`repo:sorocharge-core` `area:mpp`
 
 **Description.** No existing test in crates/sorocharge-mpp asserts MppError::HashAlreadyConsumed is returned for a pushed transaction hash that's already been consumed. All 21 of MppError's variants currently have zero direct unit-test coverage.
 
@@ -1979,7 +1981,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(mpp): assert MppError::VerificationFailed is returned for a credential failing one of the spec's verification checks
 
-`area:mpp`
+`repo:sorocharge-core` `area:mpp`
 
 **Description.** No existing test in crates/sorocharge-mpp asserts MppError::VerificationFailed is returned for a credential failing one of the spec's verification checks. All 21 of MppError's variants currently have zero direct unit-test coverage.
 
@@ -1997,7 +1999,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(mpp): assert MppError::SettlementFailed is returned for verification succeeding but on-chain settlement failing
 
-`area:mpp`
+`repo:sorocharge-core` `area:mpp`
 
 **Description.** No existing test in crates/sorocharge-mpp asserts MppError::SettlementFailed is returned for verification succeeding but on-chain settlement failing. All 21 of MppError's variants currently have zero direct unit-test coverage.
 
@@ -2015,7 +2017,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### docs: consolidate the minimum Soroban protocol version this library assumes
 
-`area:ci-release`
+`repo:sorocharge-core` `area:ci-release`
 
 **Description.** entry.rs's CredentialKind::AddressV2 doc comment notes it's 'Mandatory from protocol 28 onward,' but no single document states the library's overall minimum assumed protocol version or what happens if it's used against an older network.
 
@@ -2032,7 +2034,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### docs: add a persistent-store reference example for MPP push-mode replay protection
 
-`area:mpp`
+`repo:sorocharge-core` `area:mpp`
 
 **Description.** resource_server_mpp.rs's shipped example uses an in-memory Mutex<HashSet<String>> for consumed push-mode hashes. That's reasonable for a demo, but nothing in the example flags it as non-persistent/dev-only, and MppServer::settle_credential's docs explicitly push replay-protection ownership onto the caller.
 
@@ -2049,7 +2051,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(signer): add a statistical uniqueness sanity test for random_nonce
 
-`area:signer`
+`repo:sorocharge-core` `area:signer`
 
 **Description.** random_nonce's only property ever checked is that it doesn't error. No test confirms repeated calls actually produce distinct values, which is the entire property the nonce exists for (replay prevention).
 
@@ -2066,7 +2068,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### docs: add a versioning/compatibility philosophy section to the docs site
 
-`area:ci-release`
+`repo:sorocharge-core` `area:ci-release`
 
 **Description.** sorocharge-php pins sorocharge-core to an exact tagged release rather than a version range, and this repo's own dependencies are all exact-pinned — a deliberate, repeated choice that's never been written down anywhere as an explicit policy for downstream consumers to understand.
 
@@ -2083,7 +2085,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(signer): add boundary tests for verify_entry's current_ledger parameter
 
-`area:signer`
+`repo:sorocharge-core` `area:signer`
 
 **Description.** Existing expiry tests use current_ledger values one or two below the fixture's expiration ledger. No test exercises current_ledger == 0 or current_ledger == u32::MAX, the actual type boundaries.
 
@@ -2102,7 +2104,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### chore: add CODEOWNERS
 
-`area:ci-release` `good first issue`
+`repo:sorocharge-core` `area:ci-release` `good first issue`
 
 **Description.** No .github/CODEOWNERS file exists — nothing automatically requests review from a relevant maintainer on a PR touching a given crate.
 
@@ -2121,7 +2123,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### chore: add a pull request template
 
-`area:ci-release` `good first issue`
+`repo:sorocharge-core` `area:ci-release` `good first issue`
 
 **Description.** No .github/PULL_REQUEST_TEMPLATE.md exists — every PR starts from a blank description.
 
@@ -2140,7 +2142,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### chore: add an issue template config
 
-`area:ci-release` `good first issue`
+`repo:sorocharge-core` `area:ci-release` `good first issue`
 
 **Description.** No .github/ISSUE_TEMPLATE directory exists — new issues get GitHub's bare default, with no structured prompt and no link to CONTRIBUTING.md (once core#5 lands) or this backlog's own issue format.
 
@@ -2159,7 +2161,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### chore: add an .editorconfig
 
-`area:ci-release` `good first issue`
+`repo:sorocharge-core` `area:ci-release` `good first issue`
 
 **Description.** No .editorconfig exists — indentation/line-ending consistency across Rust, JS (golden vectors), and Markdown files relies entirely on individual editor defaults.
 
@@ -2178,7 +2180,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### chore: add a rustfmt.toml pinning formatting style explicitly
 
-`area:ci-release` `good first issue`
+`repo:sorocharge-core` `area:ci-release` `good first issue`
 
 **Description.** No rustfmt.toml exists — `cargo fmt` relies entirely on rustfmt's own defaults, which can change between rustfmt versions even with the same Rust toolchain pinned.
 
@@ -2197,7 +2199,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### docs: add a runnable doctest example to PaymentRequired
 
-`area:x402` `good first issue`
+`repo:sorocharge-core` `area:x402` `good first issue`
 
 **Description.** PaymentRequired in crates/sorocharge-x402/src/types.rs has a doc comment describing it, but no `# Examples` section with a runnable code block — `cargo test --doc` currently exercises zero doctests anywhere in the workspace.
 
@@ -2216,7 +2218,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### docs: add a runnable doctest example to PaymentRequirements
 
-`area:x402` `good first issue`
+`repo:sorocharge-core` `area:x402` `good first issue`
 
 **Description.** PaymentRequirements in crates/sorocharge-x402/src/types.rs has a doc comment describing it, but no `# Examples` section with a runnable code block — `cargo test --doc` currently exercises zero doctests anywhere in the workspace.
 
@@ -2235,7 +2237,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### docs: add a runnable doctest example to PaymentPayload
 
-`area:x402` `good first issue`
+`repo:sorocharge-core` `area:x402` `good first issue`
 
 **Description.** PaymentPayload in crates/sorocharge-x402/src/types.rs has a doc comment describing it, but no `# Examples` section with a runnable code block — `cargo test --doc` currently exercises zero doctests anywhere in the workspace.
 
@@ -2254,7 +2256,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### docs: add a runnable doctest example to VerifyRequest
 
-`area:x402` `good first issue`
+`repo:sorocharge-core` `area:x402` `good first issue`
 
 **Description.** VerifyRequest in crates/sorocharge-x402/src/types.rs has a doc comment describing it, but no `# Examples` section with a runnable code block — `cargo test --doc` currently exercises zero doctests anywhere in the workspace.
 
@@ -2273,7 +2275,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### docs: add a runnable doctest example to VerifyResponse
 
-`area:x402` `good first issue`
+`repo:sorocharge-core` `area:x402` `good first issue`
 
 **Description.** VerifyResponse in crates/sorocharge-x402/src/types.rs has a doc comment describing it, but no `# Examples` section with a runnable code block — `cargo test --doc` currently exercises zero doctests anywhere in the workspace.
 
@@ -2292,7 +2294,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### docs: add a runnable doctest example to SettlementResponse
 
-`area:x402` `good first issue`
+`repo:sorocharge-core` `area:x402` `good first issue`
 
 **Description.** SettlementResponse in crates/sorocharge-x402/src/types.rs has a doc comment describing it, but no `# Examples` section with a runnable code block — `cargo test --doc` currently exercises zero doctests anywhere in the workspace.
 
@@ -2311,7 +2313,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### docs: add a runnable doctest example to SupportedResponse
 
-`area:x402` `good first issue`
+`repo:sorocharge-core` `area:x402` `good first issue`
 
 **Description.** SupportedResponse in crates/sorocharge-x402/src/types.rs has a doc comment describing it, but no `# Examples` section with a runnable code block — `cargo test --doc` currently exercises zero doctests anywhere in the workspace.
 
@@ -2330,7 +2332,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### docs: add a runnable doctest example to MppClient::new
 
-`area:mpp` `good first issue`
+`repo:sorocharge-core` `area:mpp` `good first issue`
 
 **Description.** MppClient::new in crates/sorocharge-mpp/src/client.rs has a doc comment describing it, but no `# Examples` section with a runnable code block — `cargo test --doc` currently exercises zero doctests anywhere in the workspace.
 
@@ -2349,7 +2351,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### docs: add a runnable doctest example to MppClient::get_with_payment
 
-`area:mpp` `good first issue`
+`repo:sorocharge-core` `area:mpp` `good first issue`
 
 **Description.** MppClient::get_with_payment in crates/sorocharge-mpp/src/client.rs has a doc comment describing it, but no `# Examples` section with a runnable code block — `cargo test --doc` currently exercises zero doctests anywhere in the workspace.
 
@@ -2368,7 +2370,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### docs: add a runnable doctest example to MppServer::new
 
-`area:mpp` `good first issue`
+`repo:sorocharge-core` `area:mpp` `good first issue`
 
 **Description.** MppServer::new in crates/sorocharge-mpp/src/server.rs has a doc comment describing it, but no `# Examples` section with a runnable code block — `cargo test --doc` currently exercises zero doctests anywhere in the workspace.
 
@@ -2387,7 +2389,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### docs: add a runnable doctest example to MppServer::build_challenge_header
 
-`area:mpp` `good first issue`
+`repo:sorocharge-core` `area:mpp` `good first issue`
 
 **Description.** MppServer::build_challenge_header in crates/sorocharge-mpp/src/server.rs has a doc comment describing it, but no `# Examples` section with a runnable code block — `cargo test --doc` currently exercises zero doctests anywhere in the workspace.
 
@@ -2406,7 +2408,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### docs: add a runnable doctest example to MppServer::settle_credential
 
-`area:mpp` `good first issue`
+`repo:sorocharge-core` `area:mpp` `good first issue`
 
 **Description.** MppServer::settle_credential in crates/sorocharge-mpp/src/server.rs has a doc comment describing it, but no `# Examples` section with a runnable code block — `cargo test --doc` currently exercises zero doctests anywhere in the workspace.
 
@@ -2425,7 +2427,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### docs: add a runnable doctest example to MppServerConfig
 
-`area:mpp` `good first issue`
+`repo:sorocharge-core` `area:mpp` `good first issue`
 
 **Description.** MppServerConfig in crates/sorocharge-mpp/src/server.rs has a doc comment describing it, but no `# Examples` section with a runnable code block — `cargo test --doc` currently exercises zero doctests anywhere in the workspace.
 
@@ -2444,7 +2446,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### docs: add a runnable doctest example to ChargeRequest
 
-`area:mpp` `good first issue`
+`repo:sorocharge-core` `area:mpp` `good first issue`
 
 **Description.** ChargeRequest in crates/sorocharge-mpp/src/types.rs has a doc comment describing it, but no `# Examples` section with a runnable code block — `cargo test --doc` currently exercises zero doctests anywhere in the workspace.
 
@@ -2463,7 +2465,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### docs: add a runnable doctest example to Challenge
 
-`area:mpp` `good first issue`
+`repo:sorocharge-core` `area:mpp` `good first issue`
 
 **Description.** Challenge in crates/sorocharge-mpp/src/types.rs has a doc comment describing it, but no `# Examples` section with a runnable code block — `cargo test --doc` currently exercises zero doctests anywhere in the workspace.
 
@@ -2482,7 +2484,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### docs: add a runnable doctest example to Credential
 
-`area:mpp` `good first issue`
+`repo:sorocharge-core` `area:mpp` `good first issue`
 
 **Description.** Credential in crates/sorocharge-mpp/src/types.rs has a doc comment describing it, but no `# Examples` section with a runnable code block — `cargo test --doc` currently exercises zero doctests anywhere in the workspace.
 
@@ -2501,7 +2503,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### docs: add a runnable doctest example to Payload
 
-`area:mpp` `good first issue`
+`repo:sorocharge-core` `area:mpp` `good first issue`
 
 **Description.** Payload in crates/sorocharge-mpp/src/types.rs has a doc comment describing it, but no `# Examples` section with a runnable code block — `cargo test --doc` currently exercises zero doctests anywhere in the workspace.
 
@@ -2520,7 +2522,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### docs: add a runnable doctest example to Receipt
 
-`area:mpp` `good first issue`
+`repo:sorocharge-core` `area:mpp` `good first issue`
 
 **Description.** Receipt in crates/sorocharge-mpp/src/types.rs has a doc comment describing it, but no `# Examples` section with a runnable code block — `cargo test --doc` currently exercises zero doctests anywhere in the workspace.
 
@@ -2539,7 +2541,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### docs: add a runnable doctest example to MethodDetails
 
-`area:mpp` `good first issue`
+`repo:sorocharge-core` `area:mpp` `good first issue`
 
 **Description.** MethodDetails in crates/sorocharge-mpp/src/types.rs has a doc comment describing it, but no `# Examples` section with a runnable code block — `cargo test --doc` currently exercises zero doctests anywhere in the workspace.
 
@@ -2558,7 +2560,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(x402): unit-test Facilitator::supported() directly
 
-`area:x402` `good first issue`
+`repo:sorocharge-core` `area:x402` `good first issue`
 
 **Description.** Facilitator::supported() is a pure function needing no RPC mock at all (it only reads the facilitator's own configured network/address), yet has zero direct test coverage, unlike its request/response types which do have round-trip tests.
 
@@ -2577,7 +2579,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(mpp): unit-test MppServer::build_challenge_header directly
 
-`area:mpp` `good first issue`
+`repo:sorocharge-core` `area:mpp` `good first issue`
 
 **Description.** build_challenge_header's lower-level helpers (encode_base64url_jcs, build_www_authenticate_header) are tested in header.rs, but the MppServer method itself — the one actual callers call — has no direct test.
 
@@ -2596,7 +2598,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### chore: confirm the LICENSE file's copyright holder/year is accurate
 
-`area:ci-release` `good first issue`
+`repo:sorocharge-core` `area:ci-release` `good first issue`
 
 **Description.** LICENSE declares Apache-2.0; nothing in this audit confirmed the file's copyright notice (holder name, year) is actually correct and current rather than a boilerplate placeholder.
 
@@ -2615,7 +2617,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### chore: add a .gitattributes for consistent line endings
 
-`area:ci-release` `good first issue`
+`repo:sorocharge-core` `area:ci-release` `good first issue`
 
 **Description.** No .gitattributes exists — the mixed Rust/JS/Markdown/TOML file set has no enforced line-ending normalization for cross-platform contributors.
 
@@ -2634,7 +2636,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(x402): assert FacilitatorConfig::default() matches the spec's documented defaults exactly
 
-`area:x402` `good first issue`
+`repo:sorocharge-core` `area:x402` `good first issue`
 
 **Description.** FacilitatorConfig::default() sets max_transaction_fee_stroops and inclusion_buffer_stroops from two named constants, but no test asserts the Default impl actually produces those exact documented values.
 
@@ -2653,7 +2655,7 @@ Every item below cites a specific file and gap found by reading this repository 
 
 ### test(mpp): assert MppServerConfig::default() matches this crate's documented conservative defaults exactly
 
-`area:mpp` `good first issue`
+`repo:sorocharge-core` `area:mpp` `good first issue`
 
 **Description.** Same gap as x402's FacilitatorConfig: MppServerConfig::default()'s values are documented in a comment as this crate's own conservative choice, but no test asserts the Default impl actually produces them.
 

@@ -13,7 +13,8 @@
 
 use chrono::{DateTime, Utc};
 use sorocharge_signer::{
-    verify_entry, verify_transfer_effects, Address, ChargeParams, SignedEntry, Signer,
+    network_id_hash, verify_entry, verify_transfer_effects, Address, ChargeParams, SignedEntry,
+    Signer,
 };
 use stellar_xdr::{
     Hash as XdrHash, Limits, Preconditions, ReadXdr, ScAddress, SorobanCredentials,
@@ -39,6 +40,26 @@ const DEFAULT_CHALLENGE_EXPIRY_SECONDS: u64 = 300;
 /// same reason x402's facilitator has one: a fee-sponsoring server is
 /// exposed to fee-exhaustion attacks, and CLAUDE.md asks for the more
 /// conservative reading wherever a requirement is silent on specifics.
+///
+/// # Examples
+///
+/// ```
+/// use sorocharge_mpp::MppServerConfig;
+///
+/// // The defaults are deliberately conservative: a 50,000-stroop fee
+/// // ceiling and a 100-stroop inclusion buffer.
+/// let config = MppServerConfig::default();
+/// assert_eq!(config.max_transaction_fee_stroops, 50_000);
+/// assert_eq!(config.inclusion_buffer_stroops, 100);
+///
+/// // Operators can tighten (or raise) the ceiling to match their own
+/// // tolerance for fee-exhaustion risk.
+/// let config = MppServerConfig {
+///     max_transaction_fee_stroops: 25_000,
+///     inclusion_buffer_stroops: 50,
+/// };
+/// assert_eq!(config.max_transaction_fee_stroops, 25_000);
+/// ```
 #[derive(Debug, Clone)]
 pub struct MppServerConfig {
     pub max_transaction_fee_stroops: i64,
@@ -61,11 +82,6 @@ fn legacy_credential_fields(credentials: &SorobanCredentials) -> Result<(Address
     }
 }
 
-fn network_id_hash(network_passphrase: &str) -> [u8; 32] {
-    use sha2::{Digest, Sha256};
-    Sha256::digest(network_passphrase.as_bytes()).into()
-}
-
 /// The MPP server: verifies and settles `"stellar"`/`"charge"` payments,
 /// optionally sponsoring transaction fees from its own account.
 pub struct MppServer<'a> {
@@ -78,6 +94,43 @@ pub struct MppServer<'a> {
 impl<'a> MppServer<'a> {
     /// `signer` is the server's own fee-paying key, used only for the
     /// sponsored pull-mode flow.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// use sorocharge_mpp::{MppServer, MppServerConfig};
+    /// # use ed25519_dalek::{Signer as DalekSigner, SigningKey};
+    /// # use sorocharge_signer::{Address, Signer, SorochargeError};
+    /// # use stellar_xdr::{AccountId, PublicKey, ScAddress, Uint256};
+    /// #
+    /// # struct KeypairSigner(SigningKey);
+    /// #
+    /// # impl Signer for KeypairSigner {
+    /// #     fn sign_preimage(&self, preimage: &[u8]) -> Result<[u8; 64], SorochargeError> {
+    /// #         Ok(self.0.sign(preimage).to_bytes())
+    /// #     }
+    /// #
+    /// #     fn address(&self) -> Address {
+    /// #         ScAddress::Account(AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(
+    /// #             self.0.verifying_key().to_bytes(),
+    /// #         ))))
+    /// #     }
+    /// # }
+    ///
+    /// let rpc = stellar_rpc_client::Client::new("https://soroban-testnet.stellar.org")?;
+    /// let fee_payer = KeypairSigner(SigningKey::from_bytes(&[0x22; 32]));
+    ///
+    /// let server = MppServer::new(
+    ///     &rpc,
+    ///     &fee_payer,
+    ///     "Test SDF Network ; September 2015".to_string(),
+    ///     MppServerConfig::default(),
+    /// );
+    /// # let _ = server;
+    /// # Ok(())
+    /// # }
+    /// ```
     #[must_use]
     pub fn new(
         rpc: &'a stellar_rpc_client::Client,
@@ -101,6 +154,70 @@ impl<'a> MppServer<'a> {
     /// `"stellar"`/`"charge"` challenge. `id` and `realm` are the caller's
     /// own — this crate has no opinion on how challenge ids are generated
     /// or how the caller's challenge store keys them.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// use chrono::{Duration, Utc};
+    /// use sorocharge_mpp::{
+    ///     ChargeRequest, MethodDetails, MppServer, MppServerConfig,
+    /// };
+    /// # use ed25519_dalek::{Signer as DalekSigner, SigningKey};
+    /// # use sorocharge_signer::{Address, Signer, SorochargeError};
+    /// # use stellar_xdr::{AccountId, PublicKey, ScAddress, Uint256};
+    /// #
+    /// # struct KeypairSigner(SigningKey);
+    /// #
+    /// # impl Signer for KeypairSigner {
+    /// #     fn sign_preimage(&self, preimage: &[u8]) -> Result<[u8; 64], SorochargeError> {
+    /// #         Ok(self.0.sign(preimage).to_bytes())
+    /// #     }
+    /// #
+    /// #     fn address(&self) -> Address {
+    /// #         ScAddress::Account(AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(
+    /// #             self.0.verifying_key().to_bytes(),
+    /// #         ))))
+    /// #     }
+    /// # }
+    ///
+    /// let rpc = stellar_rpc_client::Client::new("https://soroban-testnet.stellar.org")?;
+    /// let server_signer = KeypairSigner(SigningKey::from_bytes(&[0x22; 32]));
+    /// let server = MppServer::new(
+    ///     &rpc,
+    ///     &server_signer,
+    ///     "Test SDF Network ; September 2015".to_string(),
+    ///     MppServerConfig::default(),
+    /// );
+    ///
+    /// let charge = ChargeRequest {
+    ///     amount: "42000000".to_string(),
+    ///     currency: "CAZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGGJH"
+    ///         .to_string(),
+    ///     recipient: "GCQJVJPUPJTVTABP7FK7RXBNFIKKLSM5EO7JP6DECJ77SOBUKWSPB64N"
+    ///         .to_string(),
+    ///     description: Some("API access fee".to_string()),
+    ///     external_id: Some("order-42".to_string()),
+    ///     method_details: MethodDetails {
+    ///         network: "stellar:testnet".to_string(),
+    ///         fee_payer: true,
+    ///     },
+    /// };
+    /// let expires = Utc::now() + Duration::minutes(5);
+    ///
+    /// let header = server.build_challenge_header(
+    ///     "kM9xPqWvT2nJrHsY4aDfEb",
+    ///     "api.example.com",
+    ///     &charge,
+    ///     expires,
+    /// )?;
+    ///
+    /// assert!(header.starts_with("Payment "));
+    /// assert!(header.contains("method=\"stellar\""));
+    /// assert!(header.contains("intent=\"charge\""));
+    /// # Ok(())
+    /// # }
+    /// ```
     ///
     /// # Errors
     ///
@@ -134,6 +251,96 @@ impl<'a> MppServer<'a> {
     /// returned receipt's `reference` hash consumed after a successful
     /// return, atomically with respect to concurrent calls for the same
     /// hash. This function does not own that store.
+    ///
+    /// # Examples
+    ///
+    /// This example echoes the issued charge back in a push-mode credential
+    /// and deliberately reports it as already consumed, so it exercises the
+    /// replay-protection guard without contacting Stellar RPC.
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// use base64::Engine as _;
+    /// use chrono::Utc;
+    /// use sorocharge_mpp::{
+    ///     Challenge, ChargeRequest, Credential, MethodDetails, MppError, MppServer,
+    ///     MppServerConfig, Payload,
+    /// };
+    /// # use ed25519_dalek::{Signer as DalekSigner, SigningKey};
+    /// # use sorocharge_signer::{Address, Signer, SorochargeError};
+    /// # use stellar_xdr::{AccountId, PublicKey, ScAddress, Uint256};
+    /// #
+    /// # struct KeypairSigner(SigningKey);
+    /// #
+    /// # impl Signer for KeypairSigner {
+    /// #     fn sign_preimage(&self, preimage: &[u8]) -> Result<[u8; 64], SorochargeError> {
+    /// #         Ok(self.0.sign(preimage).to_bytes())
+    /// #     }
+    /// #
+    /// #     fn address(&self) -> Address {
+    /// #         ScAddress::Account(AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(
+    /// #             self.0.verifying_key().to_bytes(),
+    /// #         ))))
+    /// #     }
+    /// # }
+    ///
+    /// let rpc = stellar_rpc_client::Client::new("https://soroban-testnet.stellar.org")?;
+    /// let server_signer = KeypairSigner(SigningKey::from_bytes(&[0x22; 32]));
+    /// let server = MppServer::new(
+    ///     &rpc,
+    ///     &server_signer,
+    ///     "Test SDF Network ; September 2015".to_string(),
+    ///     MppServerConfig::default(),
+    /// );
+    ///
+    /// let expected = ChargeRequest {
+    ///     amount: "42000000".to_string(),
+    ///     currency: "CAZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGGJH"
+    ///         .to_string(),
+    ///     recipient: "GCQJVJPUPJTVTABP7FK7RXBNFIKKLSM5EO7JP6DECJ77SOBUKWSPB64N"
+    ///         .to_string(),
+    ///     description: Some("API access fee".to_string()),
+    ///     external_id: None,
+    ///     method_details: MethodDetails {
+    ///         network: "stellar:testnet".to_string(),
+    ///         fee_payer: false,
+    ///     },
+    /// };
+    ///
+    /// // The credential must echo the exact base64url-JCS `request` the
+    /// // challenge carried, or challenge binding fails before settlement.
+    /// let request = base64::engine::general_purpose::URL_SAFE_NO_PAD
+    ///     .encode(serde_jcs::to_vec(&expected)?);
+    /// let credential = Credential {
+    ///     challenge: Challenge {
+    ///         id: "kM9xPqWvT2nJrHsY4aDfEb".to_string(),
+    ///         realm: "api.example.com".to_string(),
+    ///         method: "stellar".to_string(),
+    ///         intent: "charge".to_string(),
+    ///         request,
+    ///         description: None,
+    ///         opaque: None,
+    ///         digest: None,
+    ///         expires: None,
+    ///         header: None,
+    ///     },
+    ///     payload: Payload::Hash {
+    ///         hash: "a1b2c3d4e5f6789012345678901234567890123456789012345678901234abcd"
+    ///             .to_string(),
+    ///     },
+    ///     source: None,
+    /// };
+    ///
+    /// // `already_consumed` must come from the caller's own replay store.
+    /// let result = server
+    ///     .settle_credential(&credential, &expected, Utc::now(), true)
+    ///     .await;
+    ///
+    /// assert!(matches!(result, Err(MppError::HashAlreadyConsumed)));
+    /// # Ok(())
+    /// # }
+    /// ```
     ///
     /// # Errors
     ///
@@ -347,6 +554,12 @@ impl<'a> MppServer<'a> {
             .unwrap_or(DEFAULT_CHALLENGE_EXPIRY_SECONDS);
         let ledger_timeout = seconds_until_expiry.div_ceil(DEFAULT_ESTIMATED_LEDGER_SECONDS);
         let valid_until_ledger =
+            // ledger_timeout is the result of dividing seconds_until_expiry by 5
+            // (estimated ledger seconds). The result should fit in u32 for
+            // any reasonable expiry (even 2^31 seconds / 5 ≈ 4e8), but we
+            // defensively cap at u32::MAX rather than error out, since the
+            // downstream verify_entry check against valid_until_ledger will
+            // catch any genuine overflow.
             current_ledger.saturating_add(u32::try_from(ledger_timeout).unwrap_or(u32::MAX));
 
         let params = ChargeParams {
@@ -383,13 +596,13 @@ impl<'a> MppServer<'a> {
                 });
             }
         } else if let Preconditions::Time(bounds) = &tx.cond {
-            if let Some(expires_at) = expires_at {
-                let max_allowed = u64::try_from(expires_at.timestamp()).unwrap_or(0);
-                if bounds.max_time.0 > max_allowed {
-                    return Err(MppError::VerificationFailed {
-                        reason: "timeBounds.maxTime exceeds the challenge expiry".to_string(),
-                    });
-                }
+            let max_allowed = expires_at
+                .map(|e| u64::try_from(e.timestamp()).unwrap_or(0))
+                .unwrap_or(DEFAULT_CHALLENGE_EXPIRY_SECONDS);
+            if bounds.max_time.0 > max_allowed {
+                return Err(MppError::VerificationFailed {
+                    reason: "timeBounds.maxTime exceeds the challenge expiry".to_string(),
+                });
             }
         } else {
             return Err(MppError::VerificationFailed {
@@ -436,6 +649,14 @@ impl<'a> MppServer<'a> {
             let next_seq = stellar_xdr::SequenceNumber(account.seq_num.0 + 1);
             let fee = i64::try_from(simulation.min_resource_fee)
                 .unwrap_or(i64::MAX)
+                // simulation.min_resource_fee is u64; i64::MAX is 9.2e18 while
+                // u64::MAX is 1.8e19, so the conversion can lose the top bit.
+                // However, realistic Stellar resource fees are always orders of
+                // magnitude below this ceiling. The unwrap_or(i64::MAX) ensures we
+                // never silently saturate to a wrong value; instead we get i64::MAX
+                // which will then fail the fee > ceiling check (since 2^63-1 > 50_000),
+                // causing the settlement to be refused rather than submitting a
+                // transaction with a spuriously high fee.
                 .saturating_add(self.config.inclusion_buffer_stroops);
             if fee > self.config.max_transaction_fee_stroops {
                 return Err(MppError::VerificationFailed {
@@ -507,210 +728,430 @@ fn hex_decode_32(s: &str) -> Option<[u8; 32]> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::header::encode_base64url_jcs;
-    use crate::network::TESTNET_PASSPHRASE;
-    use crate::tx::build_sponsored_envelope;
-    use crate::types::{Challenge, ChargeRequest, Credential, MethodDetails, Payload};
-    use chrono::{Duration, Utc};
-    use ed25519_dalek::{Signer as DalekSigner, SigningKey};
-    use sorocharge_signer::{
-        build_charge_entry, sign_entry, Address, ChargeParams, CredentialKind, Signer,
+    use base64::Engine as _;
+    use chrono::Duration as ChronoDuration;
+    use sorocharge_signer::{build_charge_entry, sign_entry, CredentialKind};
+    use stellar_xdr::{
+        AccountId, SequenceNumber, SorobanTransactionData, TransactionV1Envelope, VecM, WriteXdr,
     };
-    use stellar_rpc_client::Client;
-    use stellar_xdr::WriteXdr;
 
-    struct TestSigner {
-        address: Address,
-    }
+    use crate::header::encode_base64url_jcs;
+    use crate::test_util::{MockRpc, TestSigner};
+    use crate::tx::{build_sponsored_envelope, build_unsponsored_transaction};
+    use crate::types::{Challenge, MethodDetails};
 
-    impl Signer for TestSigner {
-        fn sign_preimage(
-            &self,
-            _preimage: &[u8],
-        ) -> Result<[u8; 64], sorocharge_signer::SorochargeError> {
-            Ok([0u8; 64])
-        }
-        fn address(&self) -> Address {
-            self.address.clone()
-        }
-    }
+    const NETWORK_PASSPHRASE: &str = "Test SDF Network ; September 2015";
+    const CURRENT_LEDGER: u32 = 1_000;
+    const ACCOUNT_SEQ_NUM: i64 = 5;
+    const ASSET_CONTRACT: &str = "CAZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGGJH";
+    const RECIPIENT: &str = "GCQJVJPUPJTVTABP7FK7RXBNFIKKLSM5EO7JP6DECJ77SOBUKWSPB64N";
+    const AMOUNT: i128 = 42_000_000;
 
-    struct KeyedSigner {
-        signing_key: SigningKey,
-        address: Address,
-    }
-
-    impl Signer for KeyedSigner {
-        fn sign_preimage(
-            &self,
-            preimage: &[u8],
-        ) -> Result<[u8; 64], sorocharge_signer::SorochargeError> {
-            Ok(self.signing_key.sign(preimage).to_bytes())
-        }
-        fn address(&self) -> Address {
-            self.address.clone()
-        }
-    }
-
-    fn test_addresses() -> (Address, Address, Address) {
-        let asset: Address = "CAZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGGJH"
-            .parse()
-            .unwrap();
-        let payer: Address = "GDIEVMRSOQV3JKZ2CNUL2RQV4TTNAISKW4NAC25PQUQKGMWJO6DTOAE7"
-            .parse()
-            .unwrap();
-        let recipient: Address = "GCQJVJPUPJTVTABP7FK7RXBNFIKKLSM5EO7JP6DECJ77SOBUKWSPB64N"
-            .parse()
-            .unwrap();
-        (asset, payer, recipient)
-    }
-
-    #[tokio::test]
-    async fn hash_already_consumed_returned_when_already_consumed() {
-        let (asset, payer, recipient) = test_addresses();
-        let rpc = Client::new("http://127.0.0.1:1").unwrap();
-        let signer = TestSigner {
-            address: payer.clone(),
-        };
-        let server = MppServer::new(
-            &rpc,
-            &signer,
-            TESTNET_PASSPHRASE.to_string(),
-            MppServerConfig::default(),
-        );
-
-        let expected = ChargeRequest {
-            amount: "42000000".to_string(),
-            currency: asset.to_string(),
-            recipient: recipient.to_string(),
+    fn charge_request(fee_payer: bool) -> ChargeRequest {
+        ChargeRequest {
+            amount: AMOUNT.to_string(),
+            currency: ASSET_CONTRACT.to_string(),
+            recipient: RECIPIENT.to_string(),
             description: None,
             external_id: None,
             method_details: MethodDetails {
                 network: "stellar:testnet".to_string(),
-                fee_payer: false,
+                fee_payer,
             },
-        };
-        let request_b64 = encode_base64url_jcs(&expected).unwrap();
-        let credential = Credential {
-            challenge: Challenge {
-                id: "test-id".to_string(),
-                realm: "example.com".to_string(),
-                method: "stellar".to_string(),
-                intent: "charge".to_string(),
-                request: request_b64,
-                description: None,
-                opaque: None,
-                digest: None,
-                expires: Some((Utc::now() + Duration::minutes(5)).to_rfc3339()),
-                header: None,
-            },
-            payload: Payload::Hash {
-                hash: "a1b2c3d4e5f6789012345678901234567890123456789012345678901234abcd"
-                    .to_string(),
-            },
-            source: None,
-        };
-
-        let result = server
-            .settle_credential(&credential, &expected, Utc::now(), true)
-            .await;
-        assert!(matches!(result, Err(MppError::HashAlreadyConsumed)));
-    }
-
-    async fn start_mock_rpc() -> (String, tokio::task::JoinHandle<()>) {
-        use axum::{routing::post, Json, Router};
-        use serde_json::{json, Value};
-        async fn handler(Json(body): Json<Value>) -> Json<Value> {
-            let id = body.get("id").cloned().unwrap_or_else(|| json!(1));
-            let method = body.get("method").and_then(|m| m.as_str()).unwrap_or("");
-            let result = match method {
-                "getLatestLedger" => json!({
-                    "id": "mock",
-                    "protocolVersion": 22,
-                    "sequence": 100u32
-                }),
-                _ => json!({}),
-            };
-            Json(json!({"jsonrpc":"2.0","id": id, "result": result}))
         }
-        let app = Router::new().route("/", post(handler));
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let handle = tokio::spawn(async move {
-            axum::serve(listener, app).await.unwrap();
-        });
-        (format!("http://{}", addr), handle)
     }
 
-    #[tokio::test]
-    async fn server_address_conflict_returned_for_sponsored_pull_mode() {
-        let (asset, payer, recipient) = test_addresses();
-        let (url, _handle) = start_mock_rpc().await;
-        let rpc = Client::new(&url).unwrap();
-        let server_signer = TestSigner {
-            address: payer.clone(),
-        };
-        let server = MppServer::new(
-            &rpc,
-            &server_signer,
-            TESTNET_PASSPHRASE.to_string(),
-            MppServerConfig::default(),
-        );
-
-        let amount: i128 = 42_000_000;
-        let params = ChargeParams {
-            asset_contract: asset.clone(),
-            amount,
+    fn charge_params(payer: &Address, valid_until_ledger: u32) -> ChargeParams {
+        ChargeParams {
+            asset_contract: ASSET_CONTRACT.parse().expect("asset contract"),
+            amount: AMOUNT,
             payer: payer.clone(),
-            recipient: recipient.clone(),
-            valid_until_ledger: 120,
-        };
-        let signing_key = SigningKey::from_bytes(&[0x11u8; 32]);
-        let keyed = KeyedSigner {
-            signing_key,
-            address: payer.clone(),
-        };
-        let unsigned = build_charge_entry(&params, CredentialKind::Legacy).unwrap();
-        let signed = sign_entry(unsigned, &keyed, TESTNET_PASSPHRASE).unwrap();
-        let envelope = build_sponsored_envelope(&params, &signed).unwrap();
-        use base64::Engine;
-        let envelope_b64 = base64::engine::general_purpose::STANDARD
-            .encode(envelope.to_xdr(stellar_xdr::Limits::none()).unwrap());
+            recipient: RECIPIENT.parse().expect("recipient"),
+            valid_until_ledger,
+        }
+    }
 
-        let expected = ChargeRequest {
-            amount: amount.to_string(),
-            currency: asset.to_string(),
-            recipient: recipient.to_string(),
-            description: None,
-            external_id: None,
-            method_details: MethodDetails {
-                network: "stellar:testnet".to_string(),
-                fee_payer: true,
-            },
-        };
-        let request_b64 = encode_base64url_jcs(&expected).unwrap();
-        let credential = Credential {
+    fn signed_entry(params: &ChargeParams, signer: &TestSigner) -> SignedEntry {
+        let unsigned = build_charge_entry(params, CredentialKind::Legacy).expect("build entry");
+        sign_entry(unsigned, signer, NETWORK_PASSPHRASE).expect("sign entry")
+    }
+
+    /// A credential echoing `expected`, with no `expires` (so the server
+    /// falls back to its default challenge expiry).
+    fn credential_for(expected: &ChargeRequest, payload: Payload) -> Credential {
+        Credential {
             challenge: Challenge {
-                id: "test-id".to_string(),
-                realm: "example.com".to_string(),
+                id: "test-challenge".to_string(),
+                realm: "test.example".to_string(),
                 method: "stellar".to_string(),
                 intent: "charge".to_string(),
-                request: request_b64,
+                request: encode_base64url_jcs(expected).expect("encode charge request"),
                 description: None,
                 opaque: None,
                 digest: None,
-                expires: Some((Utc::now() + Duration::minutes(5)).to_rfc3339()),
+                expires: None,
                 header: None,
             },
-            payload: Payload::Transaction {
-                transaction: envelope_b64,
-            },
+            payload,
             source: None,
-        };
+        }
+    }
 
+    fn account_id(address: &Address) -> AccountId {
+        match address {
+            ScAddress::Account(id) => id.clone(),
+            _ => panic!("expected an account address"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sponsored_pull_rejects_the_servers_own_address() {
+        let rpc = MockRpc::spawn(CURRENT_LEDGER, ACCOUNT_SEQ_NUM).await;
+        let rpc_client = stellar_rpc_client::Client::new(&rpc.url).expect("rpc client");
+        let server_signer = TestSigner::from_seed([0x22; 32]);
+
+        // An otherwise-valid entry, signed by the server's own key and
+        // naming the server's own address as the payer. `verify_entry`
+        // requires the authorization entry's address and the transfer's
+        // `from` to both equal `expected.payer`, so for any entry that can
+        // pass verification these two server-side checks — `transfer.from ==
+        // server` and `params.payer == server` — always hold together; this
+        // one case exercises both.
+        let valid_until = CURRENT_LEDGER + 60;
+        let params = charge_params(&server_signer.address(), valid_until);
+        let entry = signed_entry(&params, &server_signer);
+        let envelope = build_sponsored_envelope(&params, &entry).expect("sponsored envelope");
+        let transaction = envelope
+            .to_xdr_base64(Limits::none())
+            .expect("encode envelope");
+
+        let expected = charge_request(true);
+        let credential = credential_for(&expected, Payload::Transaction { transaction });
+
+        let server = MppServer::new(
+            &rpc_client,
+            &server_signer,
+            NETWORK_PASSPHRASE.to_string(),
+            MppServerConfig::default(),
+        );
         let result = server
             .settle_credential(&credential, &expected, Utc::now(), false)
             .await;
-        assert!(matches!(result, Err(MppError::ServerAddressConflict)));
+
+        assert!(
+            matches!(result, Err(MppError::ServerAddressConflict)),
+            "expected ServerAddressConflict, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn push_mode_credential_is_rejected_against_a_fee_paying_challenge() {
+        let rpc = MockRpc::spawn(CURRENT_LEDGER, ACCOUNT_SEQ_NUM).await;
+        let rpc_client = stellar_rpc_client::Client::new(&rpc.url).expect("rpc client");
+        let server_signer = TestSigner::from_seed([0x22; 32]);
+
+        let expected = charge_request(true);
+        let credential = credential_for(
+            &expected,
+            Payload::Hash {
+                hash: "ab".repeat(32),
+            },
+        );
+
+        let server = MppServer::new(
+            &rpc_client,
+            &server_signer,
+            NETWORK_PASSPHRASE.to_string(),
+            MppServerConfig::default(),
+        );
+        let result = server
+            .settle_credential(&credential, &expected, Utc::now(), false)
+            .await;
+
+        assert!(
+            matches!(result, Err(MppError::PushModeForbidsFeePayer)),
+            "expected PushModeForbidsFeePayer, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn push_mode_hash_already_consumed_is_rejected() {
+        let rpc = MockRpc::spawn(CURRENT_LEDGER, ACCOUNT_SEQ_NUM).await;
+        let rpc_client = stellar_rpc_client::Client::new(&rpc.url).expect("rpc client");
+        let server_signer = TestSigner::from_seed([0x22; 32]);
+
+        let expected = charge_request(false);
+        let credential = credential_for(
+            &expected,
+            Payload::Hash {
+                hash: "cd".repeat(32),
+            },
+        );
+
+        let server = MppServer::new(
+            &rpc_client,
+            &server_signer,
+            NETWORK_PASSPHRASE.to_string(),
+            MppServerConfig::default(),
+        );
+        let result = server
+            .settle_credential(&credential, &expected, Utc::now(), true)
+            .await;
+
+        assert!(
+            matches!(result, Err(MppError::HashAlreadyConsumed)),
+            "expected HashAlreadyConsumed, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn settle_credential_rejects_expired_challenge() {
+        let rpc = MockRpc::spawn(CURRENT_LEDGER, ACCOUNT_SEQ_NUM).await;
+        let rpc_client = stellar_rpc_client::Client::new(&rpc.url).expect("rpc client");
+        let server_signer = TestSigner::from_seed([0x22; 32]);
+
+        let expected = charge_request(false);
+        let mut credential = credential_for(
+            &expected,
+            Payload::Hash {
+                hash: "ef".repeat(32),
+            },
+        );
+        // Set expires to a timestamp in the past
+        credential.challenge.expires =
+            Some((Utc::now() - ChronoDuration::seconds(10)).to_rfc3339());
+
+        let server = MppServer::new(
+            &rpc_client,
+            &server_signer,
+            NETWORK_PASSPHRASE.to_string(),
+            MppServerConfig::default(),
+        );
+        let result = server
+            .settle_credential(&credential, &expected, Utc::now(), false)
+            .await;
+
+        assert!(
+            matches!(result, Err(MppError::ChallengeExpired)),
+            "expected ChallengeExpired, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn settle_credential_rejects_unsupported_intent() {
+        let rpc = MockRpc::spawn(CURRENT_LEDGER, ACCOUNT_SEQ_NUM).await;
+        let rpc_client = stellar_rpc_client::Client::new(&rpc.url).expect("rpc client");
+        let server_signer = TestSigner::from_seed([0x22; 32]);
+
+        let expected = charge_request(false);
+        let mut credential = credential_for(
+            &expected,
+            Payload::Hash {
+                hash: "ab".repeat(32),
+            },
+        );
+        credential.challenge.intent = "other".to_string();
+
+        let server = MppServer::new(
+            &rpc_client,
+            &server_signer,
+            NETWORK_PASSPHRASE.to_string(),
+            MppServerConfig::default(),
+        );
+        let result = server
+            .settle_credential(&credential, &expected, Utc::now(), false)
+            .await;
+
+        assert!(
+            matches!(result, Err(MppError::UnsupportedIntent { ref intent }) if intent == "other"),
+            "expected UnsupportedIntent with intent 'other', got {result:?}"
+        );
+    }
+
+    /// Regression test for the sibling fix: with no `expires` on the
+    /// challenge, an unsponsored transaction whose `maxTime` exceeds the
+    /// server's default 5-minute expiry window must be rejected rather than
+    /// silently accepted.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unsponsored_settle_without_expires_caps_time_bounds() {
+        let rpc = MockRpc::spawn(CURRENT_LEDGER, ACCOUNT_SEQ_NUM).await;
+        let rpc_client = stellar_rpc_client::Client::new(&rpc.url).expect("rpc client");
+        let payer = TestSigner::from_seed([0x33; 32]);
+
+        let valid_until = CURRENT_LEDGER + 60;
+        let params = charge_params(&payer.address(), valid_until);
+        let entry = signed_entry(&params, &payer);
+
+        let max_time =
+            u64::try_from((Utc::now() + ChronoDuration::seconds(400)).timestamp()).expect("time");
+        let tx = build_unsponsored_transaction(
+            &params,
+            &entry,
+            account_id(&payer.address()),
+            SequenceNumber(ACCOUNT_SEQ_NUM),
+            200,
+            SorobanTransactionData::default(),
+            max_time,
+        )
+        .expect("unsponsored transaction");
+        let envelope = TransactionEnvelope::Tx(TransactionV1Envelope {
+            tx,
+            signatures: VecM::default(),
+        });
+        let transaction = envelope
+            .to_xdr_base64(Limits::none())
+            .expect("encode envelope");
+
+        let expected = charge_request(false);
+        let credential = credential_for(&expected, Payload::Transaction { transaction });
+
+        let server = MppServer::new(
+            &rpc_client,
+            &payer,
+            NETWORK_PASSPHRASE.to_string(),
+            MppServerConfig::default(),
+        );
+        let result = server
+            .settle_credential(&credential, &expected, Utc::now(), false)
+            .await;
+
+        match result {
+            Err(MppError::VerificationFailed { reason }) => {
+                assert!(
+                    reason.contains("timeBounds"),
+                    "unexpected rejection reason: {reason}"
+                );
+            }
+            other => panic!("expected a timeBounds rejection, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn push_mode_invalid_hash_returns_invalid_credential() {
+        let rpc = MockRpc::spawn(CURRENT_LEDGER, ACCOUNT_SEQ_NUM).await;
+        let rpc_client = stellar_rpc_client::Client::new(&rpc.url).expect("rpc client");
+        let server_signer = TestSigner::from_seed([0x22; 32]);
+
+        let expected = charge_request(false);
+        // Invalid hash: not 64 hex chars
+        let credential = credential_for(
+            &expected,
+            Payload::Hash {
+                hash: "not-a-valid-hash".to_string(),
+            },
+        );
+
+        let server = MppServer::new(
+            &rpc_client,
+            &server_signer,
+            NETWORK_PASSPHRASE.to_string(),
+            MppServerConfig::default(),
+        );
+        let result = server
+            .settle_credential(&credential, &expected, Utc::now(), false)
+            .await;
+
+        assert!(
+            matches!(result, Err(MppError::InvalidCredential { ref reason }) if reason.contains("invalid transaction hash")),
+            "expected InvalidCredential, got {result:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pull_mode_invalid_transaction_xdr_returns_xdr_decoding_failed() {
+        let rpc = MockRpc::spawn(CURRENT_LEDGER, ACCOUNT_SEQ_NUM).await;
+        let rpc_client = stellar_rpc_client::Client::new(&rpc.url).expect("rpc client");
+        let server_signer = TestSigner::from_seed([0x22; 32]);
+
+        let expected = charge_request(false);
+        // Invalid XDR: not valid base64
+        let credential = credential_for(
+            &expected,
+            Payload::Transaction {
+                transaction: "!!!not-valid-base64!!!".to_string(),
+            },
+        );
+
+        let server = MppServer::new(
+            &rpc_client,
+            &server_signer,
+            NETWORK_PASSPHRASE.to_string(),
+            MppServerConfig::default(),
+        );
+        let result = server
+            .settle_credential(&credential, &expected, Utc::now(), false)
+            .await;
+
+        assert!(
+            matches!(result, Err(MppError::XdrDecodingFailed { ref reason }) if reason.contains("Invalid symbol")),
+            "expected XdrDecodingFailed, got {result:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pull_mode_valid_base64_but_invalid_xdr_structure_returns_xdr_decoding_failed() {
+        let rpc = MockRpc::spawn(CURRENT_LEDGER, ACCOUNT_SEQ_NUM).await;
+        let rpc_client = stellar_rpc_client::Client::new(&rpc.url).expect("rpc client");
+        let server_signer = TestSigner::from_seed([0x22; 32]);
+
+        let expected = charge_request(false);
+        // Valid base64 but not a valid TransactionEnvelope XDR
+        let invalid_xdr =
+            base64::engine::general_purpose::STANDARD.encode(b"not a valid xdr envelope");
+        let credential = credential_for(
+            &expected,
+            Payload::Transaction {
+                transaction: invalid_xdr,
+            },
+        );
+
+        let server = MppServer::new(
+            &rpc_client,
+            &server_signer,
+            NETWORK_PASSPHRASE.to_string(),
+            MppServerConfig::default(),
+        );
+        let result = server
+            .settle_credential(&credential, &expected, Utc::now(), false)
+            .await;
+
+        assert!(
+            matches!(result, Err(MppError::XdrDecodingFailed { .. })),
+            "expected XdrDecodingFailed, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn settle_credential_rejects_unsupported_network() {
+        let rpc = MockRpc::spawn(CURRENT_LEDGER, ACCOUNT_SEQ_NUM).await;
+        let rpc_client = stellar_rpc_client::Client::new(&rpc.url).expect("rpc client");
+        let server_signer = TestSigner::from_seed([0x22; 32]);
+
+        // Create an expected charge request with an unknown network
+        let mut expected = charge_request(false);
+        expected.method_details.network = "stellar:bogus".to_string();
+
+        // Create a credential that echoes this expected charge request
+        let credential = credential_for(
+            &expected,
+            Payload::Hash {
+                hash: "ab".repeat(32),
+            },
+        );
+
+        let server = MppServer::new(
+            &rpc_client,
+            &server_signer,
+            NETWORK_PASSPHRASE.to_string(),
+            MppServerConfig::default(),
+        );
+        let result = server
+            .settle_credential(&credential, &expected, Utc::now(), false)
+            .await;
+
+        assert!(
+            matches!(result, Err(MppError::UnsupportedNetwork { ref network }) if network == "stellar:bogus"),
+            "expected UnsupportedNetwork, got {result:?}"
+        );
     }
 }

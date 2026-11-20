@@ -40,6 +40,9 @@ pub enum SorochargeError {
     PayerMismatch,
     /// The entry's amount does not match `ChargeParams::amount` exactly.
     AmountMismatch,
+    /// The entry's amount is non-positive (zero or negative), which is
+    /// semantically invalid for a SEP-41 transfer.
+    AmountNonPositive,
     /// The entry's recipient does not match `ChargeParams::recipient`.
     RecipientMismatch,
     /// The signature does not verify against the reconstructed preimage.
@@ -47,6 +50,9 @@ pub enum SorochargeError {
     /// A signer's address matches no credential node (top-level address or
     /// delegate) in the entry being signed.
     NoMatchingCredentialNode,
+    /// The network passphrase does not match any known Stellar network
+    /// (currently only `stellar:pubnet` / `stellar:testnet`).
+    UnsupportedNetwork { network: String },
     /// A simulation's events could not be decoded, or a balance event lacks
     /// the topics or data a transfer must carry.
     SimulationEventsMalformed { reason: String },
@@ -96,6 +102,7 @@ impl fmt::Display for SorochargeError {
             Self::AssetMismatch => write!(f, "asset contract does not match expected charge"),
             Self::PayerMismatch => write!(f, "authorizing address does not match expected payer"),
             Self::AmountMismatch => write!(f, "amount does not match expected charge"),
+            Self::AmountNonPositive => write!(f, "amount must be positive (non-zero)"),
             Self::RecipientMismatch => write!(f, "recipient does not match expected charge"),
             Self::InvalidSignature => write!(f, "signature is invalid for the entry's credential"),
             Self::SimulationEventsMalformed { reason } => {
@@ -111,6 +118,7 @@ impl fmt::Display for SorochargeError {
                 f,
                 "signer's address matches no credential node in this entry"
             ),
+            Self::UnsupportedNetwork { network } => write!(f, "unsupported network: {network}"),
             Self::SigningFailed { reason } => write!(f, "signing failed: {reason}"),
             Self::XdrEncodingFailed { reason } => write!(f, "XDR encoding failed: {reason}"),
         }
