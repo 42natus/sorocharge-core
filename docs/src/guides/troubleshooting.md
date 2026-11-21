@@ -68,6 +68,7 @@ usually *means* in practice and what to check first when you see it.
 | Variant | What this usually means | What to check first |
 |---|---|---|
 | `XdrEncodingFailed { reason }` | A value couldn't fit its XDR-constrained shape — an oversized vector/symbol, an amount or ledger outside its range, or malformed data being wrapped. | The `reason`, plus the amount's i128 range, address types, and collection sizes. This is usually a configuration or caller-input bug rather than a network failure; include the inputs when reporting it. |
+| `UnsupportedNetwork { network }` | The network passphrase doesn't match any Stellar network this build knows (currently pubnet and testnet). Signing is network-bound, so an unknown passphrase can't be used. | That the passphrase is copied exactly, including punctuation (`Test SDF Network ; September 2015` / `Public Global Stellar Network ; September 2015`), not a CAIP-2 id or an empty/default value. |
 
 ## `sorocharge-x402` errors
 
