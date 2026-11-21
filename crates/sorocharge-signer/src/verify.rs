@@ -609,6 +609,86 @@ mod tests {
         assert_eq!(result, Err(SorochargeError::RecipientMismatch));
     }
 
+    /// Locks the documented check order: expiry is checked before the
+    /// asset, amount, recipient, and signature, so an entry that is both
+    /// expired *and* wrong on any of those must report `ExpiredEntry`. A
+    /// refactor that moved the expiry check below the amount comparison
+    /// would start returning `AmountMismatch` here and fail this test.
+    #[test]
+    fn reports_expiry_before_a_wrong_amount() {
+        let f = load();
+        let mut expected = f.expected.clone();
+        expected.amount += 1;
+        let result = verify_entry(
+            &f.signed,
+            &expected,
+            f.valid_until_ledger,
+            &f.network_passphrase,
+        );
+        assert_eq!(
+            result,
+            Err(SorochargeError::ExpiredEntry {
+                valid_until_ledger: f.valid_until_ledger,
+                current_ledger: f.valid_until_ledger,
+            }),
+            "expiry must be reported before the amount mismatch"
+        );
+    }
+
+    /// Locks the asset check ahead of the payer, amount, and recipient
+    /// checks: an entry whose asset, payer, amount, and recipient are all
+    /// wrong must report `AssetMismatch` first. Reordering asset after any
+    /// of those would fail this test.
+    #[test]
+    fn reports_asset_before_payer_amount_and_recipient() {
+        let f = load();
+        let mut expected = f.expected.clone();
+        expected.asset_contract =
+            ScAddress::Contract(stellar_xdr::ContractId(stellar_xdr::Hash([0x99; 32])));
+        expected.payer = ScAddress::Account(AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(
+            [0x11; 32],
+        ))));
+        expected.amount += 1;
+        expected.recipient = ScAddress::Account(AccountId(PublicKey::PublicKeyTypeEd25519(
+            Uint256([0x77; 32]),
+        )));
+        let result = verify_entry(
+            &f.signed,
+            &expected,
+            f.valid_until_ledger - 1,
+            &f.network_passphrase,
+        );
+        assert_eq!(
+            result,
+            Err(SorochargeError::AssetMismatch),
+            "the asset check must run before payer, amount, and recipient"
+        );
+    }
+
+    /// Locks the amount check ahead of the recipient and signature checks:
+    /// an entry with a wrong amount *and* a wrong recipient must report
+    /// `AmountMismatch`, not `RecipientMismatch`.
+    #[test]
+    fn reports_amount_before_recipient() {
+        let f = load();
+        let mut expected = f.expected.clone();
+        expected.amount += 1;
+        expected.recipient = ScAddress::Account(AccountId(PublicKey::PublicKeyTypeEd25519(
+            Uint256([0x77; 32]),
+        )));
+        let result = verify_entry(
+            &f.signed,
+            &expected,
+            f.valid_until_ledger - 1,
+            &f.network_passphrase,
+        );
+        assert_eq!(
+            result,
+            Err(SorochargeError::AmountMismatch),
+            "the amount check must run before the recipient check"
+        );
+    }
+
     #[test]
     fn rejects_a_tampered_signature() {
         let f = load();
