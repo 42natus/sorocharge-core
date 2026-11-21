@@ -151,7 +151,8 @@ transaction — not the CAP text, which the host doesn't always match exactly.
 ## Errors
 
 `SorochargeError` — every variant is named for one specific, actionable failure; no bare
-`String`, no catch-all:
+`String`, no catch-all. For what each variant usually means in practice and what to check
+first, see [Troubleshooting errors](../guides/troubleshooting.md):
 
 | Variant | Meaning |
 |---|---|

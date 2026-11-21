@@ -15,6 +15,7 @@
 - [Paying with MPP](guides/mpp-client.md)
 - [Running an MPP server](guides/mpp-server.md)
 - [Developer setup](guides/developer-setup.md)
+- [Troubleshooting errors](guides/troubleshooting.md)
 
 ## API reference
 
