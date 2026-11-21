@@ -477,6 +477,59 @@ mod tests {
         assert_eq!(result, Ok(()));
     }
 
+    /// The Delegated counterpart to `accepts_a_valid_entry_signed_by_the_reference_sdk`:
+    /// `delegated_transfer_signed.json` carries a genuine signature on *both*
+    /// delegate nodes, produced by the pinned SDK's `authorizeEntry` with
+    /// `forAddress` targeting each node in turn. This exercises the most
+    /// structurally complex credential kind against real reference output,
+    /// not just an entry this library signed for itself.
+    #[test]
+    fn accepts_a_delegated_entry_signed_by_the_reference_sdk() {
+        let fixture = load_signed_fixture("delegated_transfer_signed");
+        let xdr_entry = SorobanAuthorizationEntry::from_xdr_base64(
+            &fixture.signed_entry_xdr_base64,
+            Limits::none(),
+        )
+        .expect("fixture XDR should decode");
+
+        let SorobanCredentials::AddressWithDelegates(credentials) = &xdr_entry.credentials else {
+            panic!("delegated fixture should carry AddressWithDelegates credentials");
+        };
+        assert_eq!(
+            credentials.delegates.len(),
+            2,
+            "fixture should carry exactly the two delegate signers it was generated with"
+        );
+
+        let payload = signing_payload(
+            &xdr_entry.credentials,
+            &xdr_entry.root_invocation,
+            &fixture.network_passphrase,
+        )
+        .expect("fixture payload should reconstruct");
+        for delegate in credentials.delegates.iter() {
+            assert!(
+                is_valid_ed25519_signature(&delegate.address, &payload, &delegate.signature),
+                "every delegate node in this fixture should carry a genuine reference-SDK signature"
+            );
+        }
+
+        let expected = ChargeParams {
+            asset_contract: fixture.asset_contract.parse().unwrap(),
+            amount: fixture.amount.parse().unwrap(),
+            payer: fixture.payer.parse().unwrap(),
+            recipient: fixture.recipient.parse().unwrap(),
+            valid_until_ledger: fixture.valid_until_ledger,
+        };
+        let result = verify_entry(
+            &SignedEntry(xdr_entry),
+            &expected,
+            fixture.valid_until_ledger - 1,
+            &fixture.network_passphrase,
+        );
+        assert_eq!(result, Ok(()));
+    }
+
     #[test]
     fn rejects_an_expired_entry() {
         let f = load();

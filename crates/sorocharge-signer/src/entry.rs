@@ -458,6 +458,46 @@ mod golden_vector_tests {
             .collect()
     }
 
+    /// A nonce's entire purpose is uniqueness (replay prevention), but no
+    /// existing test checked that repeated builds with identical inputs
+    /// actually produce distinct nonces — only that `random_nonce` doesn't
+    /// error. Sample 1,000 builds: a collision in an i64 nonce space is
+    /// astronomically unlikely in 1,000 draws (~2.7e-14), so any repeat here
+    /// means the nonce source is frozen or reused, not bad luck.
+    #[test]
+    fn random_nonce_produces_distinct_values_across_repeated_builds() {
+        use std::collections::HashSet;
+
+        let params = ChargeParams {
+            asset_contract: "CAZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGGJH"
+                .parse()
+                .unwrap(),
+            amount: 1_000_000_000,
+            payer: "GDIEVMRSOQV3JKZ2CNUL2RQV4TTNAISKW4NAC25PQUQKGMWJO6DTOAE7"
+                .parse()
+                .unwrap(),
+            recipient: "GCQJVJPUPJTVTABP7FK7RXBNFIKKLSM5EO7JP6DECJ77SOBUKWSPB64N"
+                .parse()
+                .unwrap(),
+            valid_until_ledger: 123_456,
+        };
+
+        let mut seen = HashSet::new();
+        for _ in 0..1_000 {
+            let entry = build_charge_entry(&params, CredentialKind::Legacy)
+                .expect("build_charge_entry should succeed with identical valid params");
+            let SorobanCredentials::Address(credentials) = &entry.as_xdr().credentials else {
+                panic!("legacy credential kind should produce Address credentials");
+            };
+            assert!(
+                seen.insert(credentials.nonce),
+                "nonce {} was produced more than once across identical builds",
+                credentials.nonce
+            );
+        }
+        assert_eq!(seen.len(), 1_000);
+    }
+
     #[test]
     fn legacy_transfer_matches_reference_sdk_byte_for_byte() {
         let fixture = load_fixture("legacy_transfer");
