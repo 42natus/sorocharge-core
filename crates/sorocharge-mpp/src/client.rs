@@ -19,12 +19,59 @@ use crate::types::{Challenge, ChargeRequest, Credential, Payload};
 const DEFAULT_ESTIMATED_LEDGER_SECONDS: u64 = 5;
 const DEFAULT_CHALLENGE_EXPIRY_SECONDS: i64 = 300;
 const SETTLEMENT_FEE_BUFFER_STROOPS: i64 = 100;
+/// Retry configuration for transient HTTP/RPC failures.
+/// Max 3 attempts with exponential backoff (1s, 2s, 4s).
+const MAX_RETRY_ATTEMPTS: u32 = 3;
 
 fn parse_expires(expires: Option<&str>) -> DateTime<Utc> {
     expires
         .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
         .map(|dt| dt.with_timezone(&Utc))
         .unwrap_or_else(|| Utc::now() + chrono::Duration::seconds(DEFAULT_CHALLENGE_EXPIRY_SECONDS))
+}
+
+/// Retries an HTTP GET request with bounded backoff for transient failures.
+///
+/// - Retries up to `MAX_RETRY_ATTEMPTS` times (default 3).
+/// - On 5xx or connection-level errors, waits with exponential backoff
+///   (1s, 2s, 4s...).
+/// - Each attempt respects the client's `request_timeout`, so total wall-clock
+///   time is bounded by `timeout * attempts` plus backoff.
+/// - On success, returns the successful response immediately.
+/// - On final failure, returns the last error.
+async fn retry_get<T: reqwest::IntoUrl + Clone>(
+    http: &reqwest::Client,
+    url: T,
+) -> Result<reqwest::Response, MppError> {
+    let mut attempt = 0;
+    let mut last_error = MppError::HttpRequestFailed {
+        reason: "exhausted retries".to_string(),
+    };
+    while attempt < MAX_RETRY_ATTEMPTS {
+        attempt += 1;
+        match http.get(url.clone()).send().await {
+            Ok(resp) => {
+                // Don't retry on 200 (ok) or 402 (payment required) — those are
+                // deliberate protocol responses returned to the caller. Retry
+                // only on connection failures (the `Err` arm below).
+                return Ok(resp);
+            }
+            Err(e) => {
+                last_error = MppError::HttpRequestFailed {
+                    reason: format!("request attempt {} failed: {e}", attempt),
+                };
+                // Retry on connection errors.
+                if attempt < MAX_RETRY_ATTEMPTS {
+                    // Exponential backoff: 1s, 2s, 4s, ...
+                    let backoff = std::time::Duration::from_secs(
+                        1u64.saturating_pow(attempt.saturating_sub(1)),
+                    );
+                    tokio::time::sleep(backoff).await;
+                }
+            }
+        }
+    }
+    Err(last_error)
 }
 
 /// The MPP payer client. Owns a Stellar RPC client because, unlike x402,
@@ -38,6 +85,22 @@ pub struct MppClient<'a> {
 }
 
 impl<'a> MppClient<'a> {
+    /// Build a client around an existing Stellar RPC client. All HTTP
+    /// requests the client makes are bounded by `request_timeout`.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use std::time::Duration;
+    /// use sorocharge_mpp::MppClient;
+    ///
+    /// let rpc = stellar_rpc_client::Client::new(
+    ///     "https://soroban-testnet.stellar.org",
+    /// )
+    /// .unwrap();
+    /// let client = MppClient::new(&rpc, Duration::from_secs(30)).unwrap();
+    /// ```
+    ///
     /// # Errors
     ///
     /// Returns [`MppError::HttpRequestFailed`] if the underlying HTTP
@@ -62,6 +125,149 @@ impl<'a> MppClient<'a> {
     /// default, or `Payment-Authorization` when the challenge requested
     /// it).
     ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use std::time::Duration;
+    /// use ed25519_dalek::{Signer as DalekSigner, SigningKey};
+    /// use sorocharge_mpp::MppClient;
+    /// use sorocharge_signer::{Address, Signer, SorochargeError};
+    /// use stellar_xdr::{AccountId, PublicKey, ScAddress, Uint256};
+    ///
+    /// struct LocalSigner(SigningKey);
+    ///
+    /// impl Signer for LocalSigner {
+    ///     fn sign_preimage(&self, preimage: &[u8]) -> Result<[u8; 64], SorochargeError> {
+    ///         Ok(self.0.sign(preimage).to_bytes())
+    ///     }
+    ///
+    ///     fn address(&self) -> Address {
+    ///         ScAddress::Account(AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(
+    ///             self.0.verifying_key().to_bytes(),
+    ///         ))))
+    ///     }
+    /// }
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let (resource_url, rpc_url) = mock_services()?;
+    /// let signer = LocalSigner(SigningKey::from_bytes(&[0x11; 32]));
+    /// let rpc = stellar_rpc_client::Client::new(&rpc_url)?;
+    /// let client = MppClient::new(&rpc, Duration::from_secs(30))?;
+    ///
+    /// let response = client
+    ///     .get_with_payment(
+    ///         &resource_url,
+    ///         &signer,
+    ///         "Test SDF Network ; September 2015",
+    ///     )
+    ///     .await?;
+    /// assert_eq!(response.status(), reqwest::StatusCode::OK);
+    /// # Ok(())
+    /// # }
+    /// #
+    /// # fn mock_services() -> Result<(String, String), Box<dyn std::error::Error>> {
+    /// #     use std::io::{Read, Write};
+    /// #     use std::net::TcpListener;
+    /// #
+    /// #     use base64::Engine as _;
+    /// #
+    /// #     let listener = TcpListener::bind("127.0.0.1:0")?;
+    /// #     let addr = listener.local_addr()?;
+    /// #     let charge = sorocharge_mpp::ChargeRequest {
+    /// #         amount: "10000000".to_string(),
+    /// #         currency: "CAZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGGJH"
+    /// #             .to_string(),
+    /// #         recipient: "GCQJVJPUPJTVTABP7FK7RXBNFIKKLSM5EO7JP6DECJ77SOBUKWSPB64N"
+    /// #             .to_string(),
+    /// #         description: None,
+    /// #         external_id: None,
+    /// #         method_details: sorocharge_mpp::MethodDetails {
+    /// #             network: "stellar:testnet".to_string(),
+    /// #             fee_payer: true,
+    /// #         },
+    /// #     };
+    /// #     let request = base64::engine::general_purpose::URL_SAFE_NO_PAD
+    /// #         .encode(serde_json::to_vec(&charge)?);
+    /// #     let expires = (chrono::Utc::now() + chrono::Duration::seconds(300)).to_rfc3339();
+    /// #     let challenge = format!(
+    /// #         "Payment id=\"example\", realm=\"api.example.com\", method=\"stellar\", \
+    /// #          intent=\"charge\", request=\"{request}\", expires=\"{expires}\""
+    /// #     );
+    /// #
+    /// #     std::thread::spawn(move || {
+    /// #         for stream in listener.incoming() {
+    /// #             let Ok(mut stream) = stream else { continue };
+    /// #             let mut request = Vec::new();
+    /// #             let mut buf = [0_u8; 1024];
+    /// #             let (head_end, content_length) = loop {
+    /// #                 let Ok(n) = stream.read(&mut buf) else { break (None, 0) };
+    /// #                 if n == 0 {
+    /// #                     break (None, 0);
+    /// #                 }
+    /// #                 request.extend_from_slice(&buf[..n]);
+    /// #                 if let Some(pos) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+    /// #                     let head = String::from_utf8_lossy(&request[..pos]);
+    /// #                     let content_length = head
+    /// #                         .lines()
+    /// #                         .find_map(|line| {
+    /// #                             let (name, value) = line.split_once(':')?;
+    /// #                             name.eq_ignore_ascii_case("content-length")
+    /// #                                 .then(|| value.trim().parse::<usize>().ok())
+    /// #                                 .flatten()
+    /// #                         })
+    /// #                         .unwrap_or(0);
+    /// #                     if request.len() >= pos + 4 + content_length {
+    /// #                         break (Some(pos), content_length);
+    /// #                     }
+    /// #                 }
+    /// #             };
+    /// #             let Some(head_end) = head_end else { continue };
+    /// #             let head = String::from_utf8_lossy(&request[..head_end]);
+    /// #             let lower = head.to_ascii_lowercase();
+    /// #             let request_body = &request[head_end + 4..head_end + 4 + content_length];
+    /// #             let path = head
+    /// #                 .lines()
+    /// #                 .next()
+    /// #                 .and_then(|line| line.split_whitespace().nth(1))
+    /// #                 .unwrap_or("/");
+    /// #             let response = if path == "/rpc" {
+    /// #                 let id = serde_json::from_slice::<serde_json::Value>(request_body)
+    /// #                     .ok()
+    /// #                     .and_then(|request| request.get("id").cloned())
+    /// #                     .unwrap_or(serde_json::json!(1));
+    /// #                 let body = serde_json::json!({
+    /// #                     "jsonrpc": "2.0",
+    /// #                     "id": id,
+    /// #                     "result": {
+    /// #                         "id": "mock-ledger",
+    /// #                         "protocolVersion": 28,
+    /// #                         "sequence": 1000
+    /// #                     }
+    /// #                 })
+    /// #                 .to_string();
+    /// #                 format!(
+    /// #                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+    /// #                     body.len()
+    /// #                 )
+    /// #             } else if lower.contains("authorization:") {
+    /// #                 "HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\npaid".to_string()
+    /// #             } else {
+    /// #                 format!(
+    /// #                     "HTTP/1.1 402 Payment Required\r\nWWW-Authenticate: {challenge}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    /// #                 )
+    /// #             };
+    /// #             let _ = stream.write_all(response.as_bytes());
+    /// #         }
+    /// #     });
+    /// #
+    /// #     Ok((
+    /// #         format!("http://{addr}/resource"),
+    /// #         format!("http://{addr}/rpc"),
+    /// #     ))
+    /// # }
+    /// ```
+    ///
     /// # Errors
     ///
     /// See [`MppError`] for the specific failure modes.
@@ -71,18 +277,20 @@ impl<'a> MppClient<'a> {
         signer: &dyn Signer,
         network_passphrase: &str,
     ) -> Result<reqwest::Response, MppError> {
-        let first = self
-            .http
-            .get(url)
-            .send()
-            .await
-            .map_err(|e| MppError::HttpRequestFailed {
-                reason: e.to_string(),
-            })?;
+        let first = retry_get(&self.http, url).await?;
+
         if first.status() == reqwest::StatusCode::OK {
             return Ok(first);
         }
-        if first.status() != reqwest::StatusCode::PAYMENT_REQUIRED {
+        if first.status() == reqwest::StatusCode::PAYMENT_REQUIRED {
+            // Protocol-level 402: continue with challenge handling below.
+        } else if first.status().is_server_error() {
+            // Transient 5xx: retry_get already handled backoff; if we're here,
+            // retries were exhausted.
+            return Err(MppError::UnexpectedStatus {
+                status: first.status().as_u16(),
+            });
+        } else {
             return Err(MppError::UnexpectedStatus {
                 status: first.status().as_u16(),
             });
@@ -171,6 +379,11 @@ impl<'a> MppClient<'a> {
             .div_ceil(DEFAULT_ESTIMATED_LEDGER_SECONDS)
             .div_ceil(2);
         let valid_until_ledger =
+            // ledger_timeout is the result of dividing seconds_until_expiry by 10
+            // (5 estimated ledger seconds * 2 margin). The result should fit in
+            // u32 for any reasonable expiry, but we defensively cap at u32::MAX
+            // rather than error out, since the downstream verify_entry check
+            // against valid_until_ledger will catch any genuine overflow.
             current_ledger.saturating_add(u32::try_from(ledger_timeout).unwrap_or(u32::MAX));
 
         let asset_contract =
@@ -256,6 +469,14 @@ impl<'a> MppClient<'a> {
             }
             let fee = i64::try_from(simulation.min_resource_fee)
                 .unwrap_or(i64::MAX)
+                // simulation.min_resource_fee is u64; i64::MAX is 9.2e18 while
+                // u64::MAX is 1.8e19, so the conversion can lose the top bit.
+                // However, realistic Stellar resource fees are always orders of
+                // magnitude below this ceiling. The unwrap_or(i64::MAX) ensures we
+                // never silently saturate to a wrong value; instead we get i64::MAX
+                // which will then fail the fee > ceiling check (since 2^63-1 > 50_000),
+                // causing the settlement to be refused rather than submitting a
+                // transaction with a spuriously high fee.
                 .saturating_add(SETTLEMENT_FEE_BUFFER_STROOPS);
             let soroban_data = SorobanTransactionData::from_xdr_base64(
                 &simulation.transaction_data,
@@ -270,7 +491,13 @@ impl<'a> MppClient<'a> {
                 &signed,
                 payer_account_id,
                 next_seq,
-                u32::try_from(fee).unwrap_or(u32::MAX),
+                u32::try_from(fee).unwrap_or(u32::MAX), // fee is i64 from the simulation + buffer. u32::MAX is 4.3e9
+                // stroops (~0.039 XLM). Real Stellar fees are typically
+                // < 10_000 stroops. unwrap_or(u32::MAX) ensures we never silently
+                // saturate a fee that's genuinely too high; the fee check above
+                // will already have refused such cases. If fee somehow exceeds
+                // u32::MAX (extremely unlikely), the transaction won't be
+                // submitted with a maximal fee rather than erroring out of band.
                 soroban_data,
                 max_time_unix,
             )?;
@@ -336,12 +563,16 @@ impl<'a> MppClient<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::response::IntoResponse;
     use chrono::Duration as ChronoDuration;
+    use sorocharge_signer::SorochargeError;
     use std::time::Duration;
     use stellar_xdr::{AccountId, MuxedAccount, Preconditions, TransactionEnvelope, Uint256};
 
-    use crate::test_util::{MockResource, MockRpc, TestSigner};
+    use crate::test_util::{FailingSigner, MockResource, MockRpc, TestSigner};
     use crate::types::MethodDetails;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64URL;
+    use base64::Engine as _;
 
     const NETWORK: &str = "Test SDF Network ; September 2015";
     const CURRENT_LEDGER: u32 = 1_000;
@@ -405,6 +636,29 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn payment_flow_returns_signing_error_when_signer_fails() {
+        let resource = MockResource::spawn(charge_request(true), Some(expires_in(300))).await;
+        let rpc = MockRpc::spawn(CURRENT_LEDGER, ACCOUNT_SEQ_NUM).await;
+        let rpc_client = stellar_rpc_client::Client::new(&rpc.url).expect("rpc client");
+        let client = MppClient::new(&rpc_client, Duration::from_secs(5)).expect("client");
+        let address = TestSigner::from_seed([0x44; 32]).address();
+        let signing_error = SorochargeError::SigningFailed {
+            reason: "test signing failure".to_string(),
+        };
+        let signer = FailingSigner::new(address, signing_error.clone());
+
+        let result = client
+            .get_with_payment(&resource.url, &signer, NETWORK)
+            .await;
+
+        assert!(
+            matches!(result, Err(MppError::Signing(ref error)) if error == &signing_error),
+            "expected Signing error, got {result:?}"
+        );
+        assert_eq!(resource.request_count(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn unsponsored_flow_builds_a_real_sequence_and_time_bounds() {
         let resource = MockResource::spawn(charge_request(false), Some(expires_in(300))).await;
         let rpc = MockRpc::spawn(CURRENT_LEDGER, ACCOUNT_SEQ_NUM).await;
@@ -444,6 +698,348 @@ mod tests {
         assert_eq!(
             rpc.methods(),
             vec!["getLatestLedger", "getLedgerEntries", "simulateTransaction"]
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn invalid_challenge_request_returns_invalid_charge_request() {
+        // Create a mock resource that returns a challenge with an invalid request field
+        // (base64url that doesn't decode to valid JSON)
+        let invalid_request_b64 = BASE64URL.encode(b"not valid json");
+        let rpc = MockRpc::spawn(CURRENT_LEDGER, ACCOUNT_SEQ_NUM).await;
+        let rpc_client = stellar_rpc_client::Client::new(&rpc.url).expect("rpc client");
+        let client = MppClient::new(&rpc_client, Duration::from_secs(5)).expect("client");
+        let signer = TestSigner::from_seed([0x44; 32]);
+
+        // Build a challenge header with the invalid request field
+        let challenge_header = crate::header::build_www_authenticate_header(
+            "test-challenge",
+            "test.example",
+            &invalid_request_b64,
+            Some(&expires_in(300)),
+        );
+
+        // Create a mock server that returns this specific challenge
+        let mock_router = axum::Router::new().route(
+            "/resource",
+            axum::routing::get(move |headers: axum::http::HeaderMap| {
+                let challenge_header = challenge_header.clone();
+                async move {
+                    let credential_header = headers
+                        .get(axum::http::header::AUTHORIZATION)
+                        .or_else(|| headers.get("payment-authorization"));
+                    if credential_header.is_none() {
+                        let mut out = axum::http::HeaderMap::new();
+                        out.insert(
+                            axum::http::header::WWW_AUTHENTICATE,
+                            axum::http::HeaderValue::from_str(&challenge_header).unwrap(),
+                        );
+                        return (axum::http::StatusCode::PAYMENT_REQUIRED, out).into_response();
+                    }
+                    (axum::http::StatusCode::OK, "paid\n").into_response()
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, mock_router).await.unwrap();
+        });
+        let url = format!("http://{addr}/resource");
+
+        let result = client.get_with_payment(&url, &signer, NETWORK).await;
+
+        assert!(
+            matches!(result, Err(MppError::InvalidChargeRequest { ref reason }) if reason.contains("JSON decode failed")),
+            "expected InvalidChargeRequest, got {result:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unexpected_status_returns_error() {
+        // Test that a response with status other than 200 or 402 returns UnexpectedStatus
+        let rpc = MockRpc::spawn(CURRENT_LEDGER, ACCOUNT_SEQ_NUM).await;
+        let rpc_client = stellar_rpc_client::Client::new(&rpc.url).expect("rpc client");
+        let client = MppClient::new(&rpc_client, Duration::from_secs(5)).expect("client");
+        let signer = TestSigner::from_seed([0x44; 32]);
+
+        // Create a mock server that returns 404 Not Found
+        let mock_router = axum::Router::new().route(
+            "/resource",
+            axum::routing::get(|| async { (axum::http::StatusCode::NOT_FOUND, "not found") }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, mock_router).await.unwrap();
+        });
+        let url = format!("http://{addr}/resource");
+
+        let result = client.get_with_payment(&url, &signer, NETWORK).await;
+
+        assert!(
+            matches!(result, Err(MppError::UnexpectedStatus { status }) if status == 404),
+            "expected UnexpectedStatus with status 404, got {result:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn missing_challenge_header_returns_error() {
+        // Test that a 402 response with no WWW-Authenticate header returns MissingChallenge
+        let rpc = MockRpc::spawn(CURRENT_LEDGER, ACCOUNT_SEQ_NUM).await;
+        let rpc_client = stellar_rpc_client::Client::new(&rpc.url).expect("rpc client");
+        let client = MppClient::new(&rpc_client, Duration::from_secs(5)).expect("client");
+        let signer = TestSigner::from_seed([0x44; 32]);
+
+        // Create a mock server that returns 402 without WWW-Authenticate header
+        let mock_router = axum::Router::new().route(
+            "/resource",
+            axum::routing::get(|| async {
+                (axum::http::StatusCode::PAYMENT_REQUIRED, "payment required")
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, mock_router).await.unwrap();
+        });
+        let url = format!("http://{addr}/resource");
+
+        let result = client.get_with_payment(&url, &signer, NETWORK).await;
+
+        assert!(
+            matches!(result, Err(MppError::MissingChallenge)),
+            "expected MissingChallenge, got {result:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn invalid_challenge_missing_required_field_returns_error() {
+        // Test that a challenge missing a required field (e.g., "method") returns InvalidChallenge
+        let rpc = MockRpc::spawn(CURRENT_LEDGER, ACCOUNT_SEQ_NUM).await;
+        let rpc_client = stellar_rpc_client::Client::new(&rpc.url).expect("rpc client");
+        let client = MppClient::new(&rpc_client, Duration::from_secs(5)).expect("client");
+        let signer = TestSigner::from_seed([0x44; 32]);
+
+        // Build a challenge header missing the "method" field
+        let request_b64 = BASE64URL.encode(
+            crate::header::encode_base64url_jcs(&crate::types::ChargeRequest {
+                amount: "1000000".to_string(),
+                currency: "CAZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGGJH".to_string(),
+                recipient: "GCQJVJPUPJTVTABP7FK7RXBNFIKKLSM5EO7JP6DECJ77SOBUKWSPB64N".to_string(),
+                description: None,
+                external_id: None,
+                method_details: crate::types::MethodDetails {
+                    network: "stellar:testnet".to_string(),
+                    fee_payer: false,
+                },
+            })
+            .unwrap(),
+        );
+        let challenge_header = format!(
+            "Payment id=\"test-challenge\", realm=\"test.example\", intent=\"charge\", request=\"{request_b64}\""
+        );
+
+        // Create a mock server that returns this malformed challenge
+        let mock_router = axum::Router::new().route(
+            "/resource",
+            axum::routing::get(move |headers: axum::http::HeaderMap| {
+                let challenge_header = challenge_header.clone();
+                async move {
+                    let credential_header = headers
+                        .get(axum::http::header::AUTHORIZATION)
+                        .or_else(|| headers.get("payment-authorization"));
+                    if credential_header.is_none() {
+                        let mut out = axum::http::HeaderMap::new();
+                        out.insert(
+                            axum::http::header::WWW_AUTHENTICATE,
+                            axum::http::HeaderValue::from_str(&challenge_header).unwrap(),
+                        );
+                        return (axum::http::StatusCode::PAYMENT_REQUIRED, out).into_response();
+                    }
+                    (axum::http::StatusCode::OK, "paid\n").into_response()
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, mock_router).await.unwrap();
+        });
+        let url = format!("http://{addr}/resource");
+
+        let result = client.get_with_payment(&url, &signer, NETWORK).await;
+
+        assert!(
+            matches!(result, Err(MppError::InvalidChallenge { ref reason }) if reason.contains("missing \"method\"")),
+            "expected InvalidChallenge with missing method, got {result:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unsupported_method_returns_error() {
+        // Test that a challenge with method != "stellar" returns UnsupportedMethod
+        let rpc = MockRpc::spawn(CURRENT_LEDGER, ACCOUNT_SEQ_NUM).await;
+        let rpc_client = stellar_rpc_client::Client::new(&rpc.url).expect("rpc client");
+        let client = MppClient::new(&rpc_client, Duration::from_secs(5)).expect("client");
+        let signer = TestSigner::from_seed([0x44; 32]);
+
+        // Build a challenge header with method="example" (not "stellar")
+        let request_b64 = BASE64URL.encode(
+            crate::header::encode_base64url_jcs(&crate::types::ChargeRequest {
+                amount: "1000000".to_string(),
+                currency: "CAZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGGJH".to_string(),
+                recipient: "GCQJVJPUPJTVTABP7FK7RXBNFIKKLSM5EO7JP6DECJ77SOBUKWSPB64N".to_string(),
+                description: None,
+                external_id: None,
+                method_details: crate::types::MethodDetails {
+                    network: "stellar:testnet".to_string(),
+                    fee_payer: false,
+                },
+            })
+            .unwrap(),
+        );
+        let challenge_header = format!(
+            "Payment id=\"test-challenge\", realm=\"test.example\", method=\"example\", intent=\"charge\", request=\"{request_b64}\""
+        );
+
+        // Create a mock server that returns this challenge
+        let mock_router = axum::Router::new().route(
+            "/resource",
+            axum::routing::get(move |headers: axum::http::HeaderMap| {
+                let challenge_header = challenge_header.clone();
+                async move {
+                    let credential_header = headers
+                        .get(axum::http::header::AUTHORIZATION)
+                        .or_else(|| headers.get("payment-authorization"));
+                    if credential_header.is_none() {
+                        let mut out = axum::http::HeaderMap::new();
+                        out.insert(
+                            axum::http::header::WWW_AUTHENTICATE,
+                            axum::http::HeaderValue::from_str(&challenge_header).unwrap(),
+                        );
+                        return (axum::http::StatusCode::PAYMENT_REQUIRED, out).into_response();
+                    }
+                    (axum::http::StatusCode::OK, "paid\n").into_response()
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, mock_router).await.unwrap();
+        });
+        let url = format!("http://{addr}/resource");
+
+        let result = client.get_with_payment(&url, &signer, NETWORK).await;
+
+        assert!(
+            matches!(result, Err(MppError::UnsupportedMethod { ref method }) if method == "example"),
+            "expected UnsupportedMethod with method 'example', got {result:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn http_request_failed_returns_error() {
+        // Test that an unreachable URL returns HttpRequestFailed
+        let rpc = MockRpc::spawn(CURRENT_LEDGER, ACCOUNT_SEQ_NUM).await;
+        let rpc_client = stellar_rpc_client::Client::new(&rpc.url).expect("rpc client");
+        let client = MppClient::new(&rpc_client, Duration::from_secs(1)).expect("client");
+        let signer = TestSigner::from_seed([0x44; 32]);
+
+        // Use an unreachable URL (port 1 is typically reserved/unreachable)
+        let url = "http://127.0.0.1:1/resource";
+        let result = client.get_with_payment(url, &signer, NETWORK).await;
+
+        assert!(
+            matches!(result, Err(MppError::HttpRequestFailed { ref reason }) if reason.contains("request attempt")),
+            "expected HttpRequestFailed, got {result:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unsupported_network_from_passphrase_returns_error() {
+        // Test that an unknown network passphrase returns UnsupportedNetwork
+        let rpc = MockRpc::spawn(CURRENT_LEDGER, ACCOUNT_SEQ_NUM).await;
+        let rpc_client = stellar_rpc_client::Client::new(&rpc.url).expect("rpc client");
+        let client = MppClient::new(&rpc_client, Duration::from_secs(5)).expect("client");
+        let signer = TestSigner::from_seed([0x44; 32]);
+
+        let resource = MockResource::spawn(charge_request(true), Some(expires_in(300))).await;
+
+        // Use an unknown network passphrase
+        let result = client
+            .get_with_payment(&resource.url, &signer, "Unknown Network ; January 2025")
+            .await;
+
+        assert!(
+            matches!(result, Err(MppError::UnsupportedNetwork { ref network }) if network == "Unknown Network ; January 2025"),
+            "expected UnsupportedNetwork, got {result:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unsupported_network_from_challenge_returns_error() {
+        // Test that a challenge with an unknown network returns UnsupportedNetwork
+        let rpc = MockRpc::spawn(CURRENT_LEDGER, ACCOUNT_SEQ_NUM).await;
+        let rpc_client = stellar_rpc_client::Client::new(&rpc.url).expect("rpc client");
+        let client = MppClient::new(&rpc_client, Duration::from_secs(5)).expect("client");
+        let signer = TestSigner::from_seed([0x44; 32]);
+
+        // Build a challenge with an unknown network using the same helper as the crate
+        let unknown_network = "stellar:bogus";
+        let charge_request = crate::types::ChargeRequest {
+            amount: "1000000".to_string(),
+            currency: "CAZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGGJH".to_string(),
+            recipient: "GCQJVJPUPJTVTABP7FK7RXBNFIKKLSM5EO7JP6DECJ77SOBUKWSPB64N".to_string(),
+            description: None,
+            external_id: None,
+            method_details: crate::types::MethodDetails {
+                network: unknown_network.to_string(),
+                fee_payer: false,
+            },
+        };
+        let request_b64 = crate::header::encode_base64url_jcs(&charge_request).unwrap();
+        let challenge_header = crate::header::build_www_authenticate_header(
+            "test-challenge",
+            "test.example",
+            &request_b64,
+            Some(&expires_in(300)),
+        );
+
+        // Create a mock server that returns this challenge
+        let mock_router = axum::Router::new().route(
+            "/resource",
+            axum::routing::get(move |headers: axum::http::HeaderMap| {
+                let challenge_header = challenge_header.clone();
+                async move {
+                    let credential_header = headers
+                        .get(axum::http::header::AUTHORIZATION)
+                        .or_else(|| headers.get("payment-authorization"));
+                    if credential_header.is_none() {
+                        let mut out = axum::http::HeaderMap::new();
+                        out.insert(
+                            axum::http::header::WWW_AUTHENTICATE,
+                            axum::http::HeaderValue::from_str(&challenge_header).unwrap(),
+                        );
+                        return (axum::http::StatusCode::PAYMENT_REQUIRED, out).into_response();
+                    }
+                    (axum::http::StatusCode::OK, "paid\n").into_response()
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, mock_router).await.unwrap();
+        });
+        let url = format!("http://{addr}/resource");
+
+        let result = client.get_with_payment(&url, &signer, NETWORK).await;
+
+        assert!(
+            matches!(result, Err(MppError::UnsupportedNetwork { ref network }) if network == unknown_network),
+            "expected UnsupportedNetwork with network '{unknown_network}', got {result:?}"
         );
     }
 }

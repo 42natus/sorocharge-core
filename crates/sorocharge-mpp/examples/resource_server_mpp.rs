@@ -184,6 +184,7 @@ async fn resource(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Res
     let pushed_hash = match &credential.payload {
         Payload::Hash { hash } => Some(hash.clone()),
         Payload::Transaction { .. } => None,
+        _ => None,
     };
     let already_consumed = pushed_hash.as_ref().is_some_and(|h| {
         state

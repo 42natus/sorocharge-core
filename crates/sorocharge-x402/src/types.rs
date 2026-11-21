@@ -234,6 +234,41 @@ pub struct StellarExtra {
 /// Its string fields are bounded too: an `accepts[]` entry is attacker-
 /// influenced input on both the client and facilitator sides, and no
 /// single field may spend the whole response-body budget.
+///
+/// # Examples
+///
+/// ```rust
+/// use sorocharge_x402::PaymentRequirements;
+///
+/// let json = r#"
+/// {
+///   "scheme": "exact",
+///   "network": "stellar:testnet",
+///   "amount": "10000000",
+///   "asset": "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
+///   "payTo": "GBHEGW3KWOY2OFH767EDALFGCUTBOEVBDQMCKU4APMDLQNBW5QV3W3KO",
+///   "maxTimeoutSeconds": 60,
+///   "extra": {
+///     "areFeesSponsored": true
+///   }
+/// }
+/// "#;
+///
+/// let requirements: PaymentRequirements = serde_json::from_str(json).unwrap();
+/// assert_eq!(requirements.scheme, "exact");
+/// assert_eq!(requirements.network, "stellar:testnet");
+/// assert_eq!(requirements.amount, "10000000");
+/// assert_eq!(
+///     requirements.asset,
+///     "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA"
+/// );
+/// assert_eq!(
+///     requirements.pay_to,
+///     "GBHEGW3KWOY2OFH767EDALFGCUTBOEVBDQMCKU4APMDLQNBW5QV3W3KO"
+/// );
+/// assert_eq!(requirements.max_timeout_seconds, 60);
+/// assert!(requirements.extra.are_fees_sponsored);
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PaymentRequirements {
@@ -263,6 +298,41 @@ pub struct PaymentRequirements {
 
 /// The `402 Payment Required` response body, carried base64-encoded in the
 /// `PAYMENT-REQUIRED` header.
+///
+/// # Examples
+///
+/// ```rust
+/// use sorocharge_x402::PaymentRequired;
+///
+/// let json = r#"
+/// {
+///   "x402Version": 2,
+///   "resource": {
+///     "url": "https://example.com/weather",
+///     "description": "Access to protected content",
+///     "mimeType": "application/json"
+///   },
+///   "accepts": [
+///     {
+///       "scheme": "exact",
+///       "network": "stellar:testnet",
+///       "amount": "10000000",
+///       "asset": "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
+///       "payTo": "GBHEGW3KWOY2OFH767EDALFGCUTBOEVBDQMCKU4APMDLQNBW5QV3W3KO",
+///       "maxTimeoutSeconds": 60,
+///       "extra": {
+///         "areFeesSponsored": true
+///       }
+///     }
+///   ]
+/// }
+/// "#;
+///
+/// let payment_required: PaymentRequired = serde_json::from_str(json).unwrap();
+/// assert_eq!(payment_required.x402_version, 2);
+/// assert_eq!(payment_required.resource.url, "https://example.com/weather");
+/// assert_eq!(payment_required.accepts.len(), 1);
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PaymentRequired {
@@ -292,6 +362,47 @@ pub struct StellarPayload {
 
 /// The credential a client sends back, carried base64-encoded in the
 /// `PAYMENT-SIGNATURE` header.
+///
+/// # Examples
+///
+/// ```rust
+/// use sorocharge_x402::PaymentPayload;
+///
+/// let json = r#"
+/// {
+///   "x402Version": 2,
+///   "resource": {
+///     "url": "https://example.com/weather",
+///     "description": "Access to protected content",
+///     "mimeType": "application/json"
+///   },
+///   "accepted": {
+///     "scheme": "exact",
+///     "network": "stellar:testnet",
+///     "amount": "10000000",
+///     "asset": "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
+///     "payTo": "GBHEGW3KWOY2OFH767EDALFGCUTBOEVBDQMCKU4APMDLQNBW5QV3W3KO",
+///     "maxTimeoutSeconds": 60,
+///     "extra": {
+///       "areFeesSponsored": true
+///     }
+///   },
+///   "payload": {
+///     "transaction": "AAAAAgAAAABriIN4poutFUmHfB6FbFJu8GgXoPPTGQWREqFpPfvO1AAAAAAAAAAAAAAAAAAAAA..."
+///   }
+/// }
+/// "#;
+///
+/// let payment: PaymentPayload = serde_json::from_str(json).unwrap();
+/// assert_eq!(payment.x402_version, 2);
+/// assert_eq!(
+///     payment.resource.as_ref().unwrap().url,
+///     "https://example.com/weather"
+/// );
+/// assert_eq!(payment.accepted.scheme, "exact");
+/// assert_eq!(payment.accepted.amount, "10000000");
+/// assert!(payment.payload.transaction.starts_with("AAAAAgAAAABriIN4"));
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PaymentPayload {
@@ -307,6 +418,32 @@ pub struct PaymentPayload {
 /// The result of on-chain settlement, carried base64-encoded in the
 /// `PAYMENT-RESPONSE` header, and returned as the JSON body of a
 /// facilitator's `/settle`.
+///
+/// # Examples
+///
+/// Decode a successful settlement and inspect the on-chain identifiers the
+/// facilitator reported:
+///
+/// ```rust
+/// use sorocharge_x402::SettlementResponse;
+///
+/// let json = r#"{
+///   "success": true,
+///   "transaction": "3389e9f0f1a65f19736cacf544c2e825313e8447f569233bb8db39aa607c8889",
+///   "network": "stellar:testnet",
+///   "payer": "GBHEGW3KWOY2OFH767EDALFGCUTBOEVBDQMCKU4APMDLQNBW5QV3W3KO",
+///   "amount": "10000000"
+/// }"#;
+///
+/// let settlement: SettlementResponse = serde_json::from_str(json).unwrap();
+/// assert!(settlement.success);
+/// assert_eq!(settlement.network, "stellar:testnet");
+/// assert_eq!(
+///     settlement.payer.as_deref(),
+///     Some("GBHEGW3KWOY2OFH767EDALFGCUTBOEVBDQMCKU4APMDLQNBW5QV3W3KO")
+/// );
+/// assert_eq!(settlement.amount.as_deref(), Some("10000000"));
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SettlementResponse {
@@ -323,6 +460,27 @@ pub struct SettlementResponse {
 }
 
 /// The JSON body a facilitator's `/verify` returns.
+///
+/// # Examples
+///
+/// ```rust
+/// use sorocharge_x402::VerifyResponse;
+///
+/// let json = r#"
+/// {
+///   "isValid": true,
+///   "payer": "GBHEGW3KWOY2OFH767EDALFGCUTBOEVBDQMCKU4APMDLQNBW5QV3W3KO"
+/// }
+/// "#;
+///
+/// let response: VerifyResponse = serde_json::from_str(json).unwrap();
+/// assert!(response.is_valid);
+/// assert!(response.invalid_reason.is_none());
+/// assert_eq!(
+///     response.payer.as_deref(),
+///     Some("GBHEGW3KWOY2OFH767EDALFGCUTBOEVBDQMCKU4APMDLQNBW5QV3W3KO")
+/// );
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VerifyResponse {
@@ -335,6 +493,54 @@ pub struct VerifyResponse {
 
 /// The JSON body a resource server sends to a facilitator's `/verify` or
 /// `/settle` (identical shape for both, per spec §7.2).
+///
+/// # Examples
+///
+/// ```rust
+/// use sorocharge_x402::VerifyRequest;
+///
+/// let json = r#"
+/// {
+///   "x402Version": 2,
+///   "paymentPayload": {
+///     "x402Version": 2,
+///     "accepted": {
+///       "scheme": "exact",
+///       "network": "stellar:testnet",
+///       "amount": "10000000",
+///       "asset": "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
+///       "payTo": "GBHEGW3KWOY2OFH767EDALFGCUTBOEVBDQMCKU4APMDLQNBW5QV3W3KO",
+///       "maxTimeoutSeconds": 60,
+///       "extra": {
+///         "areFeesSponsored": true
+///       }
+///     },
+///     "payload": {
+///       "transaction": "AAAAAgAAAABriIN4poutFUmHfB6FbFJu8GgXoPPTGQWREqFpPfvO1AAAAAAAAAAAAAAAAAAAAA..."
+///     }
+///   },
+///   "paymentRequirements": {
+///     "scheme": "exact",
+///     "network": "stellar:testnet",
+///     "amount": "10000000",
+///     "asset": "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
+///     "payTo": "GBHEGW3KWOY2OFH767EDALFGCUTBOEVBDQMCKU4APMDLQNBW5QV3W3KO",
+///     "maxTimeoutSeconds": 60,
+///     "extra": {
+///       "areFeesSponsored": true
+///     }
+///   }
+/// }
+/// "#;
+///
+/// let request: VerifyRequest = serde_json::from_str(json).unwrap();
+/// assert_eq!(request.x402_version, 2);
+/// assert_eq!(request.payment_payload.accepted.amount, "10000000");
+/// assert_eq!(
+///     request.payment_requirements.pay_to,
+///     "GBHEGW3KWOY2OFH767EDALFGCUTBOEVBDQMCKU4APMDLQNBW5QV3W3KO"
+/// );
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VerifyRequest {
@@ -356,6 +562,40 @@ pub struct SupportedKind {
 }
 
 /// The JSON body a facilitator's `/supported` returns.
+///
+/// # Examples
+///
+/// Decode a `/supported` response and check which scheme/network pairs the
+/// facilitator advertises:
+///
+/// ```rust
+/// use sorocharge_x402::SupportedResponse;
+///
+/// let json = r#"{
+///   "kinds": [
+///     {
+///       "x402Version": 2,
+///       "scheme": "exact",
+///       "network": "stellar:testnet"
+///     }
+///   ],
+///   "extensions": [],
+///   "signers": {
+///     "stellar:*": [
+///       "GBHEGW3KWOY2OFH767EDALFGCUTBOEVBDQMCKU4APMDLQNBW5QV3W3KO"
+///     ]
+///   }
+/// }"#;
+///
+/// let supported: SupportedResponse = serde_json::from_str(json).unwrap();
+/// assert_eq!(supported.kinds.len(), 1);
+/// assert_eq!(supported.kinds[0].scheme, "exact");
+/// assert_eq!(supported.kinds[0].network, "stellar:testnet");
+/// assert_eq!(
+///     supported.signers["stellar:*"][0],
+///     "GBHEGW3KWOY2OFH767EDALFGCUTBOEVBDQMCKU4APMDLQNBW5QV3W3KO"
+/// );
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SupportedResponse {

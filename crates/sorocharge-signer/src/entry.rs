@@ -14,6 +14,32 @@ use crate::error::SorochargeError;
 /// in a shape the reference SDKs don't also produce.
 pub type Address = ScAddress;
 
+/// Decodes a SEP-23 strkey (`G...` account, `C...` contract, `M...` muxed
+/// account) into an [`Address`].
+///
+/// The protocol adapters this library serves receive addresses as JSON
+/// strings, while every structure built, signed, and verified here carries
+/// an `ScAddress`. `str.parse::<Address>()` already rejects anything that
+/// isn't a decodable address — this wrapper exists so that failure is
+/// reported as [`SorochargeError::InvalidAddress`] carrying the offending
+/// string, the one variant a caller can act on ("this input was never an
+/// address") rather than a generic parse error, per the constraint that
+/// every public error variant is distinct enough to act on differently.
+///
+/// # Errors
+///
+/// Returns [`SorochargeError::InvalidAddress`] with `strkey` set to the
+/// input string whenever it fails to decode into an [`ScAddress`]: bad
+/// length, bad base32, a broken checksum, or a well-formed strkey of a
+/// type that is not an address (e.g. a secret key).
+pub fn parse_address(strkey: &str) -> Result<Address, SorochargeError> {
+    strkey
+        .parse::<Address>()
+        .map_err(|_| SorochargeError::InvalidAddress {
+            strkey: strkey.to_owned(),
+        })
+}
+
 /// The parameters of a single SEP-41 transfer this library will build, sign,
 /// or verify an authorization entry for.
 ///
@@ -21,6 +47,35 @@ pub type Address = ScAddress;
 /// signature exactly, and `valid_until_ledger` is a ledger number (never
 /// wall-clock time) because that is what Soroban authorization expiry
 /// actually checks on-chain.
+///
+/// # Examples
+///
+/// ```rust
+/// use sorocharge_signer::ChargeParams;
+/// use stellar_xdr::ScAddress;
+///
+/// let asset_contract: ScAddress = "CAZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGGJH"
+///     .parse()
+///     .expect("valid contract address");
+/// let payer: ScAddress = "GDIEVMRSOQV3JKZ2CNUL2RQV4TTNAISKW4NAC25PQUQKGMWJO6DTOAE7"
+///     .parse()
+///     .expect("valid payer address");
+/// let recipient: ScAddress = "GCQJVJPUPJTVTABP7FK7RXBNFIKKLSM5EO7JP6DECJ77SOBUKWSPB64N"
+///     .parse()
+///     .expect("valid recipient address");
+///
+/// let params = ChargeParams {
+///     asset_contract,
+///     amount: 1_000_000,
+///     payer,
+///     recipient,
+///     valid_until_ledger: 123_456,
+/// };
+///
+/// assert_eq!(params.amount, 1_000_000);
+/// assert_eq!(params.recipient.to_string(), "GCQJVJPUPJTVTABP7FK7RXBNFIKKLSM5EO7JP6DECJ77SOBUKWSPB64N");
+/// assert_eq!(params.valid_until_ledger, 123_456);
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChargeParams {
     /// The SEP-41 Stellar Asset Contract (SAC) address being transferred.
@@ -43,7 +98,31 @@ pub struct ChargeParams {
 /// verify and so is out of scope for a payment-authorization library: every
 /// charge here is authorized by an explicit `Address`, never implicitly by
 /// the transaction's source account.
+///
+/// # Examples
+///
+/// ```rust
+/// use sorocharge_signer::CredentialKind;
+/// use stellar_xdr::ScAddress;
+///
+/// let signer_a: ScAddress = "GDIEVMRSOQV3JKZ2CNUL2RQV4TTNAISKW4NAC25PQUQKGMWJO6DTOAE7"
+///     .parse()
+///     .expect("valid signer address");
+/// let signer_b: ScAddress = "GCQJVJPUPJTVTABP7FK7RXBNFIKKLSM5EO7JP6DECJ77SOBUKWSPB64N"
+///     .parse()
+///     .expect("valid signer address");
+///
+/// let credential = CredentialKind::Delegated {
+///     signers: vec![signer_a, signer_b],
+/// };
+///
+/// match credential {
+///     CredentialKind::Delegated { signers } => assert_eq!(signers.len(), 2),
+///     _ => panic!("expected delegated signers"),
+/// }
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CredentialKind {
     /// `SOROBAN_CREDENTIALS_ADDRESS`: a single ed25519 signature over the
     /// legacy (pre-CAP-71) authorization preimage.
@@ -65,6 +144,30 @@ pub enum CredentialKind {
 /// The credentials' `signature` field is the empty-vector placeholder
 /// (`ScVal::Vec(Some(ScVec(..)))` with no elements) that `sign_entry` fills
 /// in, matching the shape the reference SDK builds prior to signing.
+///
+/// # Examples
+///
+/// ```
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// use sorocharge_signer::{build_charge_entry, parse_address, ChargeParams, CredentialKind};
+/// use stellar_xdr::SorobanCredentials;
+///
+/// let params = ChargeParams {
+///     asset_contract: parse_address("CAZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGGJH")?,
+///     amount: 1_500_000,
+///     payer: parse_address("GDIEVMRSOQV3JKZ2CNUL2RQV4TTNAISKW4NAC25PQUQKGMWJO6DTOAE7")?,
+///     recipient: parse_address("GCQJVJPUPJTVTABP7FK7RXBNFIKKLSM5EO7JP6DECJ77SOBUKWSPB64N")?,
+///     valid_until_ledger: 100_000,
+/// };
+///
+/// let unsigned = build_charge_entry(&params, CredentialKind::AddressV2)?;
+/// assert!(matches!(
+///     &unsigned.as_xdr().credentials,
+///     SorobanCredentials::AddressV2(_)
+/// ));
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnsignedEntry(pub(crate) SorobanAuthorizationEntry);
 
@@ -74,6 +177,22 @@ impl UnsignedEntry {
     #[must_use]
     pub fn as_xdr(&self) -> &SorobanAuthorizationEntry {
         &self.0
+    }
+
+    /// The ledger number this entry expires at, read back off the entry —
+    /// exactly the `valid_until_ledger` it was built with.
+    ///
+    /// Exposed so a payer can tell a user when the authorization it just built
+    /// stops being accepted, without re-deriving that from the inputs it passed
+    /// in and without reaching into raw XDR.
+    ///
+    /// # Errors
+    ///
+    /// [`SorochargeError::UnsupportedCredentialType`] if the entry carries
+    /// `SourceAccount` credentials, which have no expiration ledger;
+    /// [`build_charge_entry`] never produces those.
+    pub fn signature_expiration_ledger(&self) -> Result<u32, SorochargeError> {
+        crate::sign::entry_expiration_ledger(&self.0)
     }
 }
 
@@ -225,6 +344,29 @@ fn random_nonce() -> Result<i64, SorochargeError> {
 /// `credential` this build of the library does not yet construct XDR for,
 /// and [`SorochargeError::XdrEncodingFailed`] if a value can't be encoded
 /// into its XDR-constrained shape (e.g. a `VecM` length limit).
+///
+/// # Example
+///
+/// ```no_run
+/// use sorocharge_signer::{build_charge_entry, parse_address, ChargeParams, CredentialKind};
+///
+/// # fn main() -> Result<(), sorocharge_signer::SorochargeError> {
+/// let params = ChargeParams {
+///     // The asset contract being pulled from (an `ScAddress` — `C...` for
+///     // a issued Soroban asset token, `G...` for a native-XLM-like stub).
+///     asset_contract: parse_address("GCX7DRGVA2GIN3IBOQDNZZTL3PQKUPBAJ3EPZXVOEVNGA4V5PV4NCRAA")?,
+///     amount: 1_500_000, // 1.5 XLM, in stroops (7 decimal digits)
+///     payer: parse_address("GDIEVMRSOQV3JKZ2CNUL2RQV4TTNAISKW4NAC25PQUQKGMWJO6DTOAE7")?,
+///     recipient: parse_address("GCQJVJPUPJTVTABP7FK7RXBNFIKKLSM5EO7JP6DECJ77SOBUKWSPB64N")?,
+///     valid_until_ledger: 100_000,
+/// };
+///
+/// let unsigned = build_charge_entry(&params, CredentialKind::Legacy)?;
+/// // `unsigned` is an `UnsignedEntry`; pass it to `sign_entry` next to
+/// // produce the signed `SorobanAuthorizationEntry`.
+/// # Ok(())
+/// # }
+/// ```
 pub fn build_charge_entry(
     params: &ChargeParams,
     credential: CredentialKind,
@@ -267,6 +409,9 @@ pub(crate) fn build_charge_entry_with_nonce(
 #[cfg(test)]
 mod golden_vector_tests {
     use super::*;
+    use crate::sign::{sign_entry, Signer};
+    use crate::verify::verify_entry;
+    use ed25519_dalek::{Signer as DalekSigner, SigningKey};
     use serde::Deserialize;
     use stellar_xdr::{Limits, ReadXdr, WriteXdr};
 
@@ -646,5 +791,291 @@ mod golden_vector_tests {
         );
 
         assert_eq!(result, Err(SorochargeError::DuplicateDelegateSigner));
+    }
+
+    /// Pulls the `Int128Parts` the built entry encodes the transfer amount
+    /// as — the exact hi/lo split [`build_transfer_invocation`] produces,
+    /// and the structure a boundary off-by-one would hide in.
+    fn encoded_amount_parts(entry: &SorobanAuthorizationEntry) -> Int128Parts {
+        let SorobanAuthorizedFunction::ContractFn(invoke) = &entry.root_invocation.function else {
+            panic!("built entry should authorize a single contract call");
+        };
+        let [ScVal::Address(_), ScVal::Address(_), ScVal::I128(parts)] = invoke.args.as_slice()
+        else {
+            panic!("transfer invocation should carry (from, to, I128 amount) args");
+        };
+        parts.clone()
+    }
+
+    /// Diffs a built unsigned entry's XDR against its fixture byte for
+    /// byte, the same proof of reference-SDK equivalence every other
+    /// golden vector in this module provides.
+    fn assert_matches_fixture_xdr(unsigned: &UnsignedEntry, fixture: &Fixture) {
+        let expected = SorobanAuthorizationEntry::from_xdr_base64(
+            &fixture.unsigned_entry_xdr_base64,
+            Limits::none(),
+        )
+        .expect("fixture XDR should decode");
+
+        let actual_bytes = unsigned
+            .as_xdr()
+            .to_xdr(Limits::none())
+            .expect("constructed entry should encode to XDR");
+        let expected_bytes = expected
+            .to_xdr(Limits::none())
+            .expect("decoded fixture should re-encode to XDR");
+
+        assert_eq!(
+            actual_bytes, expected_bytes,
+            "sorocharge-signer's unsigned entry XDR must be byte-identical to @stellar/stellar-sdk 17.2.0's output"
+        );
+    }
+
+    /// The smallest possible positive transfer: 1 base unit, whose hi/lo
+    /// split is `(0, 1)` — the lower boundary of `Int128Parts`, where an
+    /// off-by-one that dropped or shifted the lowest bit would silently
+    /// corrupt the amount to 0 (or 2^64) without any mid-range fixture
+    /// noticing.
+    #[test]
+    fn legacy_transfer_of_one_base_unit_matches_reference_sdk_byte_for_byte() {
+        let fixture = load_fixture("legacy_transfer_min_amount");
+        assert_eq!(
+            fixture.amount, "1",
+            "fixture must pin the lower i128 amount boundary"
+        );
+
+        let params = ChargeParams {
+            asset_contract: fixture.asset_contract.parse::<ScAddress>().unwrap(),
+            amount: fixture.amount.parse().unwrap(),
+            payer: fixture.payer.parse::<ScAddress>().unwrap(),
+            recipient: fixture.recipient.parse::<ScAddress>().unwrap(),
+            valid_until_ledger: fixture.valid_until_ledger,
+        };
+        let nonce: i64 = fixture.nonce.parse().unwrap();
+
+        let unsigned = build_charge_entry_with_nonce(&params, CredentialKind::Legacy, nonce)
+            .expect("build_charge_entry_with_nonce should succeed for a 1-base-unit transfer");
+
+        let parts = encoded_amount_parts(unsigned.as_xdr());
+        assert_eq!(
+            (parts.hi, parts.lo),
+            (0, 1),
+            "amount 1 must encode as Int128Parts {{ hi: 0, lo: 1 }}"
+        );
+
+        assert_matches_fixture_xdr(&unsigned, &fixture);
+    }
+
+    /// The largest representable transfer: `i128::MAX`, whose hi/lo split
+    /// is `(i64::MAX, u64::MAX)` — the upper boundary, where every bit of
+    /// both halves is set, so a sign-extension, mask-width, or shift error
+    /// in the split (or in `verify_entry`'s reassembly) yields a different
+    /// value.
+    #[test]
+    fn legacy_transfer_of_i128_max_matches_reference_sdk_byte_for_byte() {
+        let fixture = load_fixture("legacy_transfer_max_amount");
+        assert_eq!(
+            fixture.amount,
+            i128::MAX.to_string(),
+            "fixture must pin the upper i128 amount boundary"
+        );
+
+        let params = ChargeParams {
+            asset_contract: fixture.asset_contract.parse::<ScAddress>().unwrap(),
+            amount: fixture.amount.parse().unwrap(),
+            payer: fixture.payer.parse::<ScAddress>().unwrap(),
+            recipient: fixture.recipient.parse::<ScAddress>().unwrap(),
+            valid_until_ledger: fixture.valid_until_ledger,
+        };
+        let nonce: i64 = fixture.nonce.parse().unwrap();
+
+        let unsigned = build_charge_entry_with_nonce(&params, CredentialKind::Legacy, nonce)
+            .expect("build_charge_entry_with_nonce should succeed for an i128::MAX transfer");
+
+        let parts = encoded_amount_parts(unsigned.as_xdr());
+        assert_eq!(
+            (parts.hi, parts.lo),
+            (i64::MAX, u64::MAX),
+            "amount i128::MAX must encode as Int128Parts {{ hi: i64::MAX, lo: u64::MAX }}"
+        );
+
+        assert_matches_fixture_xdr(&unsigned, &fixture);
+    }
+
+    /// An ed25519 signer for the fixture payer, using the same 32-byte seed
+    /// `generate.mjs` derives that payer from, so build→sign→verify runs
+    /// end-to-end on one key.
+    struct FixedSeedPayerSigner {
+        signing_key: SigningKey,
+        address: Address,
+    }
+
+    impl Signer for FixedSeedPayerSigner {
+        fn sign_preimage(&self, preimage: &[u8]) -> Result<[u8; 64], SorochargeError> {
+            Ok(self.signing_key.sign(preimage).to_bytes())
+        }
+
+        fn address(&self) -> Address {
+            self.address.clone()
+        }
+    }
+
+    /// Round-trips a boundary amount through the exact public path a caller
+    /// uses — [`build_charge_entry`] (with its real, random nonce),
+    /// [`sign_entry`], [`verify_entry`] — and then re-verifies with a
+    /// one-unit-smaller expectation to prove verification compares all 128
+    /// bits exactly. [`verify_entry`] reassembles `Int128Parts` back into
+    /// an `i128` before comparing, so `Ok(())` here proves the amount
+    /// survived the split and reassembly unchanged at this boundary.
+    fn assert_amount_round_trips_unchanged(amount: i128) {
+        let fixture = load_fixture("legacy_transfer");
+        let params = ChargeParams {
+            asset_contract: fixture.asset_contract.parse::<ScAddress>().unwrap(),
+            amount,
+            payer: fixture.payer.parse::<ScAddress>().unwrap(),
+            recipient: fixture.recipient.parse::<ScAddress>().unwrap(),
+            valid_until_ledger: fixture.valid_until_ledger,
+        };
+        let network_passphrase = "Test SDF Network ; September 2015";
+        let current_ledger = params.valid_until_ledger - 1;
+
+        let unsigned = build_charge_entry(&params, CredentialKind::Legacy)
+            .expect("build_charge_entry should succeed for any positive i128 amount");
+
+        let parts = encoded_amount_parts(unsigned.as_xdr());
+        assert_eq!(
+            (i128::from(parts.hi) << 64) | i128::from(parts.lo),
+            amount,
+            "the built entry's Int128Parts must reassemble to exactly the amount passed in"
+        );
+
+        let signer = FixedSeedPayerSigner {
+            signing_key: SigningKey::from_bytes(&[0x11u8; 32]),
+            address: params.payer.clone(),
+        };
+        let signed = sign_entry(unsigned, &signer, network_passphrase)
+            .expect("sign_entry should succeed for the fixture payer's key");
+
+        assert_eq!(
+            verify_entry(&signed, &params, current_ledger, network_passphrase),
+            Ok(()),
+            "verify_entry must accept an entry whose amount matches exactly"
+        );
+
+        // Rejected off by exactly one unit: proof the check compares the
+        // full 128-bit amount, not a truncated or rounded half of it.
+        // Steps up rather than down (except at i128::MAX, where up would
+        // overflow) to stay clear of the AmountNonPositive check, which
+        // fires first for a non-positive expectation.
+        let mut off_by_one = params.clone();
+        off_by_one.amount = if amount < i128::MAX {
+            amount + 1
+        } else {
+            amount - 1
+        };
+        assert_eq!(
+            verify_entry(&signed, &off_by_one, current_ledger, network_passphrase),
+            Err(SorochargeError::AmountMismatch),
+            "verify_entry must reject an expectation exactly one base unit away from the boundary"
+        );
+    }
+
+    #[test]
+    fn amount_one_round_trips_unchanged_through_build_sign_and_verify() {
+        assert_amount_round_trips_unchanged(1);
+    }
+
+    #[test]
+    fn amount_i128_max_round_trips_unchanged_through_build_sign_and_verify() {
+        assert_amount_round_trips_unchanged(i128::MAX);
+    }
+
+    /// The expiry a caller asked for must be readable back off both the
+    /// unsigned and the signed entry, for every credential kind — the payer's
+    /// "expires around ledger N" display reads it from the entry it holds, not
+    /// from the parameters it passed in.
+    fn assert_expiration_ledger_is_reported(credential: CredentialKind) {
+        let fixture = load_fixture("legacy_transfer");
+        let valid_until_ledger = 4_242_424;
+        let params = ChargeParams {
+            asset_contract: fixture.asset_contract.parse::<ScAddress>().unwrap(),
+            amount: fixture.amount.parse().unwrap(),
+            payer: fixture.payer.parse::<ScAddress>().unwrap(),
+            recipient: fixture.recipient.parse::<ScAddress>().unwrap(),
+            valid_until_ledger,
+        };
+        let nonce: i64 = fixture.nonce.parse().unwrap();
+
+        let unsigned = build_charge_entry_with_nonce(&params, credential, nonce)
+            .expect("build_charge_entry_with_nonce should succeed for every credential kind");
+        assert_eq!(
+            unsigned.signature_expiration_ledger(),
+            Ok(valid_until_ledger),
+            "an unsigned entry must report the valid_until_ledger it was built with"
+        );
+
+        let signer = FixedSeedPayerSigner {
+            signing_key: SigningKey::from_bytes(&[0x11u8; 32]),
+            address: params.payer.clone(),
+        };
+        let signed = sign_entry(unsigned, &signer, "Test SDF Network ; September 2015")
+            .expect("sign_entry should succeed for a signer that matches the payer node");
+        assert_eq!(
+            signed.signature_expiration_ledger(),
+            Ok(valid_until_ledger),
+            "signing must not change the expiry the entry reports"
+        );
+    }
+
+    #[test]
+    fn expiration_ledger_is_reported_for_legacy_credentials() {
+        assert_expiration_ledger_is_reported(CredentialKind::Legacy);
+    }
+
+    #[test]
+    fn expiration_ledger_is_reported_for_address_v2_credentials() {
+        assert_expiration_ledger_is_reported(CredentialKind::AddressV2);
+    }
+
+    #[test]
+    fn expiration_ledger_is_reported_for_delegated_credentials() {
+        let fixture = load_fixture("legacy_transfer");
+        let payer = fixture.payer.parse::<ScAddress>().unwrap();
+        assert_expiration_ledger_is_reported(CredentialKind::Delegated {
+            signers: vec![payer],
+        });
+    }
+}
+
+#[cfg(test)]
+mod address_tests {
+    use super::*;
+
+    /// A real account strkey with its final character swapped, which breaks
+    /// only the CRC16 checksum: the input is still 56 base32 characters
+    /// shaped like a `G...` address, but it must fail to decode into an
+    /// `ScAddress`. The failure has to surface as exactly
+    /// `Err(SorochargeError::InvalidAddress)` carrying the original string —
+    /// the assertion compares the whole `Result`, so returning any other
+    /// variant fails the test with a readable diff instead of passing.
+    #[test]
+    fn strkey_that_fails_to_decode_returns_invalid_address() {
+        let strkey = "GCQJVJPUPJTVTABP7FK7RXBNFIKKLSM5EO7JP6DECJ77SOBUKWSPB64M";
+
+        // Guard the fixture itself: the test proves nothing if this string
+        // ever starts decoding into an ScAddress.
+        assert!(
+            strkey.parse::<Address>().is_err(),
+            "fixture must be a strkey that fails to decode into an ScAddress"
+        );
+
+        let result = parse_address(strkey);
+
+        assert_eq!(
+            result,
+            Err(SorochargeError::InvalidAddress {
+                strkey: strkey.to_owned(),
+            })
+        );
     }
 }

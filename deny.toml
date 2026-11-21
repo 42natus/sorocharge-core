@@ -1,0 +1,31 @@
+# deny.toml — cargo-deny configuration for vulnerability and license scanning
+
+[graph]
+# CI builds this workspace on Linux; add targets here when CI support expands.
+targets = ["x86_64-unknown-linux-gnu"]
+
+[advisories]
+version = 2
+ignore = [
+  # chrono is unmaintained (RUSTSEC-2026-0543) but is a transitive dependency
+  # of stellar-rpc-client and is used directly by sorocharge-mpp for ledger
+  # timestamps. No safe upgrade exists yet; revisit when stellar-rpc-client
+  # migrates away from chrono.
+  "RUSTSEC-2026-0543",
+]
+
+[licenses]
+version = 2
+# Permissive licenses plus the Stellar/Soroban ecosystem's ISC.
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "BSD-4-Clause",
+  "Unlicense",
+  "ISC",
+  # Pulled in transitively by the ICU crates and the TLS root-certificate data.
+  "Unicode-3.0",
+  "CDLA-Permissive-2.0",
+]
