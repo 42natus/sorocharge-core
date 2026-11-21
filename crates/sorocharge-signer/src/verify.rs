@@ -216,11 +216,14 @@ pub fn verify_entry(
     if authorizing_address != expected.payer || transfer.from != expected.payer {
         return Err(SorochargeError::PayerMismatch);
     }
-    if transfer.amount != expected.amount {
-        return Err(SorochargeError::AmountMismatch);
-    }
+    // Reject a non-positive expected charge before comparing amounts: an
+    // expected amount of zero or less is not a valid payment at all, and
+    // reporting it as a plain mismatch would hide that from the caller.
     if expected.amount <= 0 {
         return Err(SorochargeError::AmountNonPositive);
+    }
+    if transfer.amount != expected.amount {
+        return Err(SorochargeError::AmountMismatch);
     }
     if transfer.to != expected.recipient {
         return Err(SorochargeError::RecipientMismatch);
@@ -240,6 +243,86 @@ pub fn verify_entry(
 
     Ok(())
 }
+
+/// Verifies a Delegated entry's signatures against the account's actual
+/// threshold policy.
+///
+/// This function checks that the number of valid signatures attached to
+/// the Delegated credential meets or exceeds the provided threshold,
+/// and that each signature is cryptographically valid for its claimed
+/// signer's key. This is more stringent than `verify_entry`, which only
+/// proves that at least one signature is cryptographically valid.
+///
+/// # Errors
+///
+/// Returns [`SorochargeError::InvalidSignature`] if the total valid
+/// signature weight is below the threshold, or if any individual signature
+/// verification fails.
+///
+/// # Note
+///
+/// This function is explicitly unreachable via the x402 and MPP protocol
+/// adapters today: x402 forbids `AddressWithDelegates` outright, and MPP
+/// only accepts legacy `Address` credentials for pull mode. However, any
+/// direct caller of `sorocharge-signer` using `Delegated` credentials is
+/// exposed to this gap, and this function provides the missing verification.
+pub fn verify_delegated_threshold(
+    entry: &SignedEntry,
+    expected: &ChargeParams,
+    current_ledger: u32,
+    network_passphrase: &str,
+    signers_with_weights: &[(Address, u32)],
+    threshold: u32,
+) -> Result<(), SorochargeError> {
+    // The threshold check only proves *enough* signatures are genuine; the
+    // entry itself must still authorize the expected charge, so every other
+    // verification rule is applied first and fails closed.
+    verify_entry(entry, expected, current_ledger, network_passphrase)?;
+
+    let xdr_entry = entry.as_xdr();
+    let (_, signable_nodes) = authorizing_address_and_signable_nodes(&xdr_entry.credentials)?;
+
+    // Determine the minimum total weight needed.
+    let min_threshold = threshold;
+
+    // Count how many of the signable nodes have valid signatures,
+    // weighted by each signer's weight.
+    let mut valid_sig_count: u32 = 0;
+    for (address, signature) in &signable_nodes {
+        if let Some((pk_bytes, sig_bytes)) = extract_account_signature(signature) {
+            // Find the signer's weight
+            if let Some((_, weight)) = signers_with_weights
+                .iter()
+                .find(|(addr, _)| addr == address)
+            {
+                // Verify the signature is valid for this account's key
+                let Ok(verifying_key) = VerifyingKey::from_bytes(&pk_bytes) else {
+                    continue;
+                };
+                let payload = signing_payload(
+                    &xdr_entry.credentials,
+                    &xdr_entry.root_invocation,
+                    network_passphrase,
+                )?;
+                if verifying_key
+                    .verify(&payload, &Signature::from_bytes(&sig_bytes))
+                    .is_ok()
+                {
+                    valid_sig_count += weight;
+                }
+            }
+        }
+    }
+
+    if valid_sig_count < min_threshold {
+        return Err(SorochargeError::InvalidSignature);
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
     use super::*;
     use crate::sign::build_account_signature_scval;
     use serde::Deserialize;
@@ -306,6 +389,59 @@ pub fn verify_entry(
             &f.expected,
             f.valid_until_ledger - 1,
             &f.network_passphrase,
+        );
+        assert_eq!(result, Ok(()));
+    }
+
+    /// The Delegated counterpart to `accepts_a_valid_entry_signed_by_the_reference_sdk`:
+    /// `delegated_transfer_signed.json` carries a genuine signature on *both*
+    /// delegate nodes, produced by the pinned SDK's `authorizeEntry` with
+    /// `forAddress` targeting each node in turn. This exercises the most
+    /// structurally complex credential kind against real reference output,
+    /// not just an entry this library signed for itself.
+    #[test]
+    fn accepts_a_delegated_entry_signed_by_the_reference_sdk() {
+        let fixture = load_signed_fixture("delegated_transfer_signed");
+        let xdr_entry = SorobanAuthorizationEntry::from_xdr_base64(
+            &fixture.signed_entry_xdr_base64,
+            Limits::none(),
+        )
+        .expect("fixture XDR should decode");
+
+        let SorobanCredentials::AddressWithDelegates(credentials) = &xdr_entry.credentials else {
+            panic!("delegated fixture should carry AddressWithDelegates credentials");
+        };
+        assert_eq!(
+            credentials.delegates.len(),
+            2,
+            "fixture should carry exactly the two delegate signers it was generated with"
+        );
+
+        let payload = signing_payload(
+            &xdr_entry.credentials,
+            &xdr_entry.root_invocation,
+            &fixture.network_passphrase,
+        )
+        .expect("fixture payload should reconstruct");
+        for delegate in credentials.delegates.iter() {
+            assert!(
+                is_valid_ed25519_signature(&delegate.address, &payload, &delegate.signature),
+                "every delegate node in this fixture should carry a genuine reference-SDK signature"
+            );
+        }
+
+        let expected = ChargeParams {
+            asset_contract: fixture.asset_contract.parse().unwrap(),
+            amount: fixture.amount.parse().unwrap(),
+            payer: fixture.payer.parse().unwrap(),
+            recipient: fixture.recipient.parse().unwrap(),
+            valid_until_ledger: fixture.valid_until_ledger,
+        };
+        let result = verify_entry(
+            &SignedEntry(xdr_entry),
+            &expected,
+            fixture.valid_until_ledger - 1,
+            &fixture.network_passphrase,
         );
         assert_eq!(result, Ok(()));
     }
@@ -395,8 +531,10 @@ pub fn verify_entry(
 
     #[test]
     fn rejects_non_positive_amount() {
+        let f = load();
+
         // Test with amount = 0
-        let mut expected_zero = f.expected;
+        let mut expected_zero = f.expected.clone();
         expected_zero.amount = 0;
         let result = verify_entry(
             &f.signed,
@@ -410,7 +548,7 @@ pub fn verify_entry(
             "verify_entry should reject amount == 0"
         );
         // Test with negative amount
-        let mut expected_neg = f.expected;
+        let mut expected_neg = f.expected.clone();
         expected_neg.amount = -1;
         let result = verify_entry(
             &f.signed,
@@ -528,73 +666,4 @@ pub fn verify_entry(
         );
         assert_eq!(result, Err(SorochargeError::UnexpectedInvocationShape));
     }
-
-/// Verifies a Delegated entry's signatures against the account's actual
-/// threshold policy.
-///
-/// This function checks that the number of valid signatures attached to
-/// the Delegated credential meets or exceeds the provided threshold,
-/// and that each signature is cryptographically valid for its claimed
-/// signer's key. This is more stringent than `verify_entry`, which only
-/// proves that at least one signature is cryptographically valid.
-///
-/// # Errors
-///
-/// Returns [`SorochargeError::InvalidSignature`] if the total valid
-/// signature weight is below the threshold, or if any individual signature
-/// verification fails.
-///
-/// # Note
-///
-/// This function is explicitly unreachable via the x402 and MPP protocol
-/// adapters today: x402 forbids `AddressWithDelegates` outright, and MPP
-/// only accepts legacy `Address` credentials for pull mode. However, any
-/// direct caller of `sorocharge-signer` using `Delegated` credentials is
-/// exposed to this gap, and this function provides the missing verification.
-pub fn verify_delegated_threshold(
-    entry: &SignedEntry,
-    expected: &ChargeParams,
-    current_ledger: u32,
-    network_passphrase: &str,
-    signers_with_weights: &[(Address, u32)],
-    threshold: u32,
-) -> Result<(), SorochargeError> {
-    let xdr_entry = entry.as_xdr();
-    let (_, signable_nodes) =
-        authorizing_address_and_signable_nodes(&xdr_entry.credentials)?;
-
-    // Determine the minimum total weight needed.
-    let min_threshold = threshold;
-
-    // Count how many of the signable nodes have valid signatures,
-    // weighted by each signer's weight.
-    let mut valid_sig_count: u32 = 0;
-    for (address, signature) in &signable_nodes {
-        if let Some((pk_bytes, sig_bytes)) = extract_account_signature(signature) {
-            // Find the signer's weight
-            if let Some((_, weight)) = signers_with_weights.iter().find(|(addr, _)| **addr == *address) {
-                // Verify the signature is valid for this account's key
-                let Ok(verifying_key) = VerifyingKey::from_bytes(&pk_bytes) else {
-                    continue;
-                };
-                let payload = signing_payload(
-                    &xdr_entry.credentials,
-                    &xdr_entry.root_invocation,
-                    network_passphrase,
-                )?;
-                if verifying_key
-                    .verify(payload, &Signature::from_bytes(sig_bytes))
-                    .is_ok()
-                {
-                    valid_sig_count += weight;
-                }
-            }
-        }
-    }
-
-    if valid_sig_count < min_threshold {
-        return Err(SorochargeError::InvalidSignature);
-    }
-
-    Ok(())
 }
