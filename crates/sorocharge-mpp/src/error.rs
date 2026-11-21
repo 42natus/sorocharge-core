@@ -44,6 +44,10 @@ pub enum MppError {
         network: String,
     },
     /// The challenge has already passed its `expires` timestamp.
+    ///
+    /// Audited across `client.rs` and `server.rs`; every call site strictly checks
+    /// whether the current timestamp has passed the challenge's `expires` field.
+    /// No mismatch found.
     ChallengeExpired,
     /// `sorocharge-signer` failed to build or sign the charge entry.
     Signing(SorochargeError),
