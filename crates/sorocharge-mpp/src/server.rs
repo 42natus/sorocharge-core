@@ -732,11 +732,13 @@ mod tests {
     use chrono::Duration as ChronoDuration;
     use sorocharge_signer::{build_charge_entry, sign_entry, CredentialKind};
     use stellar_xdr::{
-        AccountId, SequenceNumber, SorobanTransactionData, TransactionV1Envelope, VecM, WriteXdr,
+        AccountId, ContractEvent, ContractEventBody, ContractEventType, ContractEventV0,
+        DiagnosticEvent, ExtensionPoint, Int128Parts, ScSymbol, ScVal, SequenceNumber,
+        SorobanTransactionData, TransactionV1Envelope, VecM, WriteXdr,
     };
 
     use crate::header::encode_base64url_jcs;
-    use crate::test_util::{MockRpc, TestSigner};
+    use crate::test_util::{MockGetTransaction, MockRpc, TestSigner};
     use crate::tx::{build_sponsored_envelope, build_unsponsored_transaction};
     use crate::types::{Challenge, MethodDetails};
 
@@ -1152,6 +1154,158 @@ mod tests {
         assert!(
             matches!(result, Err(MppError::UnsupportedNetwork { ref network }) if network == "stellar:bogus"),
             "expected UnsupportedNetwork, got {result:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reports_rpc_failed_when_the_rpc_call_fails() {
+        let rpc = MockRpc::spawn(CURRENT_LEDGER, ACCOUNT_SEQ_NUM).await;
+        rpc.set_get_transaction(MockGetTransaction::RpcError);
+        let rpc_client = stellar_rpc_client::Client::new(&rpc.url).expect("rpc client");
+        let server_signer = TestSigner::from_seed([0x22; 32]);
+
+        let expected = charge_request(false);
+        let credential = credential_for(
+            &expected,
+            Payload::Hash {
+                hash: "ab".repeat(32),
+            },
+        );
+
+        let server = MppServer::new(
+            &rpc_client,
+            &server_signer,
+            NETWORK_PASSPHRASE.to_string(),
+            MppServerConfig::default(),
+        );
+        let result = server
+            .settle_credential(&credential, &expected, Utc::now(), false)
+            .await;
+
+        assert!(
+            matches!(result, Err(MppError::RpcFailed { .. })),
+            "expected RpcFailed, got {result:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reports_verification_failed_when_the_credential_fails_a_check() {
+        let rpc = MockRpc::spawn(CURRENT_LEDGER, ACCOUNT_SEQ_NUM).await;
+        rpc.set_get_transaction(MockGetTransaction::Failed);
+        let rpc_client = stellar_rpc_client::Client::new(&rpc.url).expect("rpc client");
+        let server_signer = TestSigner::from_seed([0x22; 32]);
+
+        let expected = charge_request(false);
+        let credential = credential_for(
+            &expected,
+            Payload::Hash {
+                hash: "cd".repeat(32),
+            },
+        );
+
+        let server = MppServer::new(
+            &rpc_client,
+            &server_signer,
+            NETWORK_PASSPHRASE.to_string(),
+            MppServerConfig::default(),
+        );
+        let result = server
+            .settle_credential(&credential, &expected, Utc::now(), false)
+            .await;
+
+        assert!(
+            matches!(result, Err(MppError::VerificationFailed { .. })),
+            "expected VerificationFailed, got {result:?}"
+        );
+    }
+
+    /// The transfer event a successful simulation must emit for
+    /// [`charge_params`]'s transfer to pass `verify_transfer_effects`.
+    fn transfer_event_xdr(params: &ChargeParams) -> String {
+        let ScAddress::Contract(contract_id) = &params.asset_contract else {
+            panic!("test asset must be a contract");
+        };
+        let topics: VecM<ScVal> = vec![
+            ScVal::Symbol(ScSymbol(
+                "transfer".try_into().expect("transfer is a valid symbol"),
+            )),
+            ScVal::Address(params.payer.clone()),
+            ScVal::Address(params.recipient.clone()),
+        ]
+        .try_into()
+        .expect("topics fit");
+        let event = DiagnosticEvent {
+            in_successful_contract_call: true,
+            event: ContractEvent {
+                ext: ExtensionPoint::V0,
+                contract_id: Some(contract_id.clone()),
+                type_: ContractEventType::Contract,
+                body: ContractEventBody::V0(ContractEventV0 {
+                    topics,
+                    data: ScVal::I128(Int128Parts {
+                        hi: (params.amount >> 64) as i64,
+                        lo: (params.amount & (u64::MAX as i128)) as u64,
+                    }),
+                }),
+            },
+        };
+        event.to_xdr_base64(Limits::none()).expect("encode event")
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reports_settlement_failed_when_verification_passes_but_submission_fails() {
+        let rpc = MockRpc::spawn(CURRENT_LEDGER, ACCOUNT_SEQ_NUM).await;
+        let rpc_client = stellar_rpc_client::Client::new(&rpc.url).expect("rpc client");
+        let payer = TestSigner::from_seed([0x33; 32]);
+
+        let valid_until = CURRENT_LEDGER + 60;
+        let params = charge_params(&payer.address(), valid_until);
+        let entry = signed_entry(&params, &payer);
+
+        // Make verification itself succeed: the simulation must report
+        // exactly the expected transfer.
+        rpc.set_simulation_events(vec![transfer_event_xdr(&params)]);
+
+        let max_time =
+            u64::try_from((Utc::now() + ChronoDuration::seconds(200)).timestamp()).expect("time");
+        let tx = build_unsponsored_transaction(
+            &params,
+            &entry,
+            account_id(&payer.address()),
+            SequenceNumber(ACCOUNT_SEQ_NUM),
+            200,
+            SorobanTransactionData::default(),
+            max_time,
+        )
+        .expect("unsponsored transaction");
+        let envelope = TransactionEnvelope::Tx(TransactionV1Envelope {
+            tx,
+            signatures: VecM::default(),
+        });
+        let transaction = envelope
+            .to_xdr_base64(Limits::none())
+            .expect("encode envelope");
+
+        let expected = charge_request(false);
+        let mut credential = credential_for(&expected, Payload::Transaction { transaction });
+        // An explicit expiry keeps the server's timeBounds cap anchored to a
+        // real timestamp rather than its no-expiry fallback.
+        credential.challenge.expires =
+            Some((Utc::now() + ChronoDuration::seconds(300)).to_rfc3339());
+
+        let server = MppServer::new(
+            &rpc_client,
+            &payer,
+            NETWORK_PASSPHRASE.to_string(),
+            MppServerConfig::default(),
+        );
+        let result = server
+            .settle_credential(&credential, &expected, Utc::now(), false)
+            .await;
+
+        assert!(
+            matches!(result, Err(MppError::SettlementFailed { .. })),
+            "expected SettlementFailed, got {result:?}"
         );
     }
 }
