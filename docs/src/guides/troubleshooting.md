@@ -28,7 +28,7 @@ usually *means* in practice and what to check first when you see it.
 | `UnsupportedCredentialType` | The entry's credential arm is one this library never builds or verifies — most often `SOROBAN_CREDENTIALS_SOURCE_ACCOUNT`, occasionally XDR from a newer protocol version than this build understands. | Where the entry came from and what built it. Use `Legacy`, `AddressV2`, or `Delegated`. x402's `exact` scheme forbids source-account credentials; MPP pull mode requires legacy `Address`. |
 | `EmptyDelegateSigners` | A `Delegated` credential was built with zero signers, which can never satisfy `__check_auth`. | That the signers list gathered from config or the wire is non-empty before building the entry. |
 | `DuplicateDelegateSigner` | The same delegate address appears twice. CAP-71 requires strictly ascending, unique delegate nodes, so the host would reject this entry. | For a duplicate that differs only in whitespace, or the same key listed under two config entries. Deduplicate full strkeys before building. |
-| `NoMatchingCredentialNode` | You asked `sign_entry` to sign, but the signer's address is neither the credential's top-level address nor one of its delegates. | `signer.address()` against the entry's authorizing address and its `delegates` list. A common mistake is signing with the payer key for an entry authorized by a different account, or using a contract (`C...`) address as the signer. |
+| `NoMatchingCredentialNode` | You asked `sign_entry` to sign, but the signer's address is neither the credential's top-level address nor one of its delegates. | `signer.address()` against the entry's authorizing address and its `delegates` list. A common mistake is signing with the payer key for an entry authorized by a different account. (A contract `C...` signer is reported as `UnsupportedSignerAddress`, not this.) |
 
 ### Expiry
 
@@ -53,7 +53,8 @@ usually *means* in practice and what to check first when you see it.
 | Variant | What this usually means | What to check first |
 |---|---|---|
 | `InvalidSignature` | No signable node carries a genuine ed25519 signature over the reconstructed preimage. Either the signature is wrong, or it was made for a different payload. | The network passphrase is identical on both sides (it is hashed into the payload); the signing key matches the node's address (not just any funded key); the signer signed the **32-byte hash digest** this library reconstructs, not the raw preimage XDR. For `Delegated`, at least one attached node must be validly signed. From `verify_delegated_threshold`, it can also mean every signature is genuine but the weight that counts is below `threshold` — check that each signer is listed in `signers_with_weights` with the weight you expect. |
-| `SigningFailed { reason }` | Your `Signer` implementation itself failed, or was asked to sign for something that isn't an Ed25519 account (e.g. a contract address). | The `reason` text from your callback, key permissions/HSM availability, and that `Signer::address()` is the `G...` account that owns the key. |
+| `SigningFailed { reason }` | Your `Signer` implementation's `sign_preimage` itself returned this error; `sign_entry` passes it through unchanged. | The `reason` text from your callback and key permissions/HSM availability. |
+| `UnsupportedSignerAddress { address }` | `Signer::address()` returned something other than an Ed25519 account (e.g. a contract `C...` or muxed `M...` address), so there is no public key to attach. | That `Signer::address()` is the `G...` account that owns the key. |
 
 ### Simulation effects
 
