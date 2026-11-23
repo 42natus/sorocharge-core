@@ -114,13 +114,13 @@ impl X402Client {
     ///
     /// # Errors
     ///
-    /// Returns [`X402Error::HttpRequestFailed`] if the underlying HTTP
+    /// Returns [`X402Error::HttpClientBuildFailed`] if the underlying HTTP
     /// client fails to construct (e.g. a broken TLS backend).
     pub fn new(request_timeout: std::time::Duration) -> Result<Self, X402Error> {
         let http = reqwest::Client::builder()
             .timeout(request_timeout)
             .build()
-            .map_err(|e| X402Error::HttpRequestFailed {
+            .map_err(|e| X402Error::HttpClientBuildFailed {
                 reason: e.to_string(),
             })?;
         Ok(Self { http })
@@ -149,13 +149,20 @@ impl X402Client {
                 .map_err(|_| X402Error::InvalidPaymentRequired {
                     reason: format!("invalid asset address: {}", requirements.asset),
                 })?;
-        let amount =
-            requirements
-                .amount
-                .parse()
-                .map_err(|_| X402Error::InvalidPaymentRequired {
-                    reason: format!("invalid amount: {}", requirements.amount),
-                })?;
+        // `i128::from_str` accepts a leading `-`, so a parse alone would let
+        // a server's challenge ask this client to sign a negative or zero
+        // transfer. Reject both here, before anything is signed.
+        let amount = requirements
+            .amount
+            .parse::<i128>()
+            .ok()
+            .filter(|amount| *amount > 0)
+            .ok_or_else(|| X402Error::InvalidPaymentRequired {
+                reason: format!(
+                    "invalid amount (must be a positive base-unit integer): {}",
+                    requirements.amount
+                ),
+            })?;
         let recipient =
             requirements
                 .pay_to
@@ -234,16 +241,11 @@ impl X402Client {
         if first.status() == reqwest::StatusCode::OK {
             return Ok(first);
         }
-        if first.status() == reqwest::StatusCode::PAYMENT_REQUIRED {
-            // Protocol-level 402: build and sign, then retry with signature.
-            // This is not a transient failure; it's the expected payment challenge.
-        } else if first.status().is_server_error() {
-            // Transient 5xx: retry with backoff is handled by retry_get,
-            // but if we exhausted retries, fail now.
-            return Err(X402Error::UnexpectedStatus {
-                status: first.status().as_u16(),
-            });
-        } else {
+        if first.status() != reqwest::StatusCode::PAYMENT_REQUIRED {
+            // Anything other than 200 / 402 on the unpaid request — including
+            // a 5xx, which `retry_get` returns as-is rather than retrying —
+            // is a status this client cannot continue from. Nothing has been
+            // signed yet, so this is safe for the caller to retry.
             return Err(X402Error::UnexpectedStatus {
                 status: first.status().as_u16(),
             });
@@ -255,7 +257,7 @@ impl X402Client {
             .ok_or(X402Error::MissingPaymentRequiredHeader)?
             .to_str()
             .map_err(|e| X402Error::InvalidPaymentRequired {
-                reason: e.to_string(),
+                reason: format!("header value is not visible ASCII: {e}"),
             })?;
         let payment_required = decode_header_json::<PaymentRequired>(header_value)
             .map_err(|reason| X402Error::InvalidPaymentRequired { reason })?;
@@ -305,7 +307,9 @@ impl X402Client {
             })?;
 
         if second.status() != reqwest::StatusCode::OK {
-            return Err(X402Error::UnexpectedStatus {
+            // The signed credential has been sent; the server may have
+            // settled it before answering non-200. Surface that distinctly.
+            return Err(X402Error::UnexpectedStatusAfterPayment {
                 status: second.status().as_u16(),
             });
         }
@@ -490,4 +494,5 @@ mod tests {
         );
         assert_eq!(resource.request_count(), 1);
     }
+
 }
