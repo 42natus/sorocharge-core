@@ -41,12 +41,21 @@ pub enum SorochargeError {
     PayerMismatch,
     /// The entry's amount does not match `ChargeParams::amount` exactly.
     AmountMismatch,
-    /// The entry's recipient does not match `ChargeParams::recipient`.
+    /// The `to` argument of the entry's SEP-41 `transfer(from, to, amount)`
+    /// invocation does not match `ChargeParams::recipient`.
+    ///
+    /// Returned only by `verify_entry`, after the asset, payer and amount
+    /// checks have already passed.
     RecipientMismatch,
     /// The signature does not verify against the reconstructed preimage.
     InvalidSignature,
     /// A signer's address matches no credential node (top-level address or
     /// delegate) in the entry being signed.
+    ///
+    /// Only returned for address-bearing credentials (`Address`,
+    /// `AddressV2`, `AddressWithDelegates`). `SourceAccount` credentials
+    /// have no node to match at all, so they are reported as
+    /// [`SorochargeError::UnsupportedCredentialType`] instead.
     NoMatchingCredentialNode,
     /// A simulation's events could not be decoded, or a balance event lacks
     /// the topics or data a transfer must carry.
@@ -56,14 +65,26 @@ pub enum SorochargeError {
     /// The simulation does not show the expected payment transfer at all.
     ExpectedTransferMissing,
     /// The `Signer` implementation returned an error while signing a preimage.
+    ///
+    /// This crate never constructs this variant itself: it is the error a
+    /// caller's `Signer::sign_preimage` reports, which `sign_entry`
+    /// propagates unchanged.
     SigningFailed { reason: String },
+    /// `Signer::address()` returned something other than an Ed25519 account
+    /// (`G...`) — e.g. a contract (`C...`) or muxed address — so there is no
+    /// public key to place in the `{public_key, signature}` credential
+    /// signature. Carries the offending address as a strkey.
+    UnsupportedSignerAddress { address: String },
     /// Constructing or serializing an XDR structure failed.
     XdrEncodingFailed { reason: String },
     /// The entry's amount is non-positive (zero or negative), which is
     /// semantically invalid for a SEP-41 transfer.
     AmountNonPositive,
     /// The network passphrase does not match any known Stellar network
-    /// (currently only `stellar:pubnet` / `stellar:testnet`).
+    /// (currently only the pubnet and testnet passphrases, which map to the
+    /// CAIP-2 ids `stellar:pubnet` / `stellar:testnet`).
+    ///
+    /// `network` carries the rejected passphrase verbatim — not a CAIP-2 id.
     UnsupportedNetwork { network: String },
 }
 
@@ -121,6 +142,10 @@ impl fmt::Display for SorochargeError {
             ),
             Self::UnsupportedNetwork { network } => write!(f, "unsupported network: {network}"),
             Self::SigningFailed { reason } => write!(f, "signing failed: {reason}"),
+            Self::UnsupportedSignerAddress { address } => write!(
+                f,
+                "signer address must be an Ed25519 account (G...), got {address}"
+            ),
             Self::XdrEncodingFailed { reason } => write!(f, "XDR encoding failed: {reason}"),
         }
     }
