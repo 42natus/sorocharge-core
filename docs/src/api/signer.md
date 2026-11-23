@@ -220,5 +220,6 @@ first, see [Troubleshooting errors](../guides/troubleshooting.md):
 | `ExpectedTransferMissing` | The simulation shows no balance-moving event at all (a wrong one is `UnexpectedBalanceChange`). |
 | `SigningFailed { reason }` | The `Signer` implementation returned an error from `sign_preimage`; propagated unchanged. |
 | `UnsupportedSignerAddress { address }` | `Signer::address()` is not an `Ed25519` account (`G...`). |
-| `XdrEncodingFailed { reason }` | A value didn't fit its XDR-constrained shape. |
+| `XdrEncodingFailed { reason }` | A value didn't fit its XDR-constrained shape, or serializing an address/`HashIdPreimage` to XDR failed. |
+| `NonceGenerationFailed { reason }` | The OS random-number source failed while `build_charge_entry` drew the entry's nonce; nothing about the input is wrong, and a retry may succeed. |
 | `UnsupportedNetwork { network }` | The network passphrase is neither pubnet's nor testnet's; `network` is the rejected passphrase verbatim. |
