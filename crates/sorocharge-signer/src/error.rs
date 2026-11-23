@@ -43,17 +43,76 @@ pub enum SorochargeError {
     AmountMismatch,
     /// The entry's recipient does not match `ChargeParams::recipient`.
     RecipientMismatch,
-    /// The signature does not verify against the reconstructed preimage.
+    /// The entry's attached signatures do not authorize it: none verifies
+    /// over the reconstructed `HashIdPreimage`, or (threshold check only)
+    /// the ones that do verify carry too little weight.
+    ///
+    /// Returned from exactly two places, which share this variant on purpose:
+    ///
+    /// - [`verify_entry`](crate::verify_entry): no signable node (the
+    ///   top-level address, or for `Delegated` any delegate) carries a valid
+    ///   ed25519 signature over the preimage. That covers a signature over a
+    ///   different payload (e.g. another network passphrase), a key that is
+    ///   not the node's own address, a missing or wrongly-shaped signature
+    ///   `ScVal`, and a node whose address is not an ed25519 account. None of
+    ///   those can verify, and the caller's only safe response is the same.
+    /// - [`verify_delegated_threshold`](crate::verify_delegated_threshold):
+    ///   the summed weight of delegates whose signatures verify is below
+    ///   `threshold`. Here the individual signatures may all be genuine; what
+    ///   fails is that they do not add up to an authorization the account
+    ///   would accept. Signatures that do not verify, and signers absent from
+    ///   `signers_with_weights`, contribute nothing rather than erroring.
+    ///
+    /// The threshold case is a deliberate fold-in rather than a separate
+    /// variant: in both cases the entry is not validly signed for the policy
+    /// being checked, and the two are already told apart by which function
+    /// the caller invoked — `verify_entry` never checks a threshold.
     InvalidSignature,
     /// A signer's address matches no credential node (top-level address or
     /// delegate) in the entry being signed.
     NoMatchingCredentialNode,
-    /// A simulation's events could not be decoded, or a balance event lacks
-    /// the topics or data a transfer must carry.
+    /// A simulation's events could not be decoded, or a payment-shaped
+    /// balance event from the asset contract (`transfer`, or the CAP-67
+    /// issuer-side `mint` / `burn` it degenerates into) lacks the topics or
+    /// data its shape must carry.
+    ///
+    /// Every return site is in
+    /// [`verify_transfer_effects`](crate::verify_transfer_effects): an event
+    /// that is not base64 `DiagnosticEvent` XDR; a `transfer` without
+    /// `from`/`to` address topics; a `mint` without a `to` address topic; a
+    /// `burn` without a `from` address topic; or any of those three whose data
+    /// is not an `i128`. `reason` names which. Only events from the asset
+    /// contract reach these shape checks — a balance event from any other
+    /// contract is [`UnexpectedBalanceChange`](Self::UnexpectedBalanceChange)
+    /// whatever its shape, and a `clawback` is rejected as unexpected without
+    /// being shape-checked.
     SimulationEventsMalformed { reason: String },
     /// The simulation shows a balance change other than the expected payment.
+    ///
+    /// Every return site is in
+    /// [`verify_transfer_effects`](crate::verify_transfer_effects): a balance
+    /// event emitted by a contract other than the asset; a `clawback`; more
+    /// than one balance event; or a single `transfer` / `mint` / `burn` whose
+    /// payer, recipient or amount differs from the expected payment.
+    ///
+    /// One return site is a deliberate fold-in: when the caller's
+    /// `asset_contract` is not a contract (`C...`) address at all, no event
+    /// can come from it, so no simulation could ever show the expected
+    /// payment. That is reported here, with `reason` "asset address is not a
+    /// contract", before any event is read — failing closed — rather than
+    /// through a separate variant for a caller-argument error only this one
+    /// function can hit.
     UnexpectedBalanceChange { reason: String },
     /// The simulation does not show the expected payment transfer at all.
+    ///
+    /// Returned from one place,
+    /// [`verify_transfer_effects`](crate::verify_transfer_effects), when the
+    /// events contain no balance-moving event (`transfer`, `mint`, `burn` or
+    /// `clawback`) whatsoever — including an empty event list. Non-contract
+    /// events and contract events of other names are ignored. "At all" is
+    /// literal: a balance event that is present but wrong (another payer,
+    /// recipient or amount, or from another contract) is
+    /// [`UnexpectedBalanceChange`](Self::UnexpectedBalanceChange), not this.
     ExpectedTransferMissing,
     /// The `Signer` implementation returned an error while signing a preimage.
     SigningFailed { reason: String },
