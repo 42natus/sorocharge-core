@@ -134,8 +134,24 @@ pub enum SorochargeError {
     /// public key to place in the `{public_key, signature}` credential
     /// signature. Carries the offending address as a strkey.
     UnsupportedSignerAddress { address: String },
-    /// Constructing or serializing an XDR structure failed.
+    /// Constructing or serializing an XDR structure failed: a value did not
+    /// fit its XDR-constrained shape (a `VecM`/`ScSymbol`/`ScBytes` length
+    /// limit) or `to_xdr` serialization of an address or `HashIdPreimage`
+    /// failed.
+    ///
+    /// Audited for issue #271: every call site in `entry.rs` and `sign.rs` is
+    /// a genuine XDR construction or serialization failure. The one site that
+    /// was not — an OS entropy failure while drawing the entry's nonce — now
+    /// returns [`NonceGenerationFailed`](Self::NonceGenerationFailed) instead.
     XdrEncodingFailed { reason: String },
+    /// The operating system's random-number source failed while drawing the
+    /// entry's nonce in `build_charge_entry`.
+    ///
+    /// Distinct from [`XdrEncodingFailed`](Self::XdrEncodingFailed): nothing
+    /// about the caller's input is malformed, and retrying may succeed once
+    /// the entropy source recovers. The entry is never built with a fallback
+    /// or predictable nonce — failing closed is the point of this variant.
+    NonceGenerationFailed { reason: String },
     /// The entry's amount is non-positive (zero or negative), which is
     /// semantically invalid for a SEP-41 transfer.
     AmountNonPositive,
@@ -206,8 +222,35 @@ impl fmt::Display for SorochargeError {
                 "signer address must be an Ed25519 account (G...), got {address}"
             ),
             Self::XdrEncodingFailed { reason } => write!(f, "XDR encoding failed: {reason}"),
+            Self::NonceGenerationFailed { reason } => {
+                write!(f, "failed to generate nonce: {reason}")
+            }
         }
     }
 }
 
 impl std::error::Error for SorochargeError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An entropy failure must not be reported as an XDR problem: a caller
+    /// triaging `XdrEncodingFailed` goes looking at its own inputs, which are
+    /// fine here (issue #271).
+    #[test]
+    fn nonce_generation_failed_is_distinct_from_xdr_encoding_failed() {
+        let nonce = SorochargeError::NonceGenerationFailed {
+            reason: "entropy source unavailable".to_string(),
+        };
+        let xdr = SorochargeError::XdrEncodingFailed {
+            reason: "entropy source unavailable".to_string(),
+        };
+        assert_ne!(nonce, xdr);
+        assert_eq!(
+            nonce.to_string(),
+            "failed to generate nonce: entropy source unavailable"
+        );
+        assert!(!nonce.to_string().contains("XDR"));
+    }
+}
