@@ -210,9 +210,11 @@ first, see [Troubleshooting errors](../guides/troubleshooting.md):
 | `AssetMismatch` / `PayerMismatch` / `AmountMismatch` / `RecipientMismatch` | Field doesn't match. |
 | `AmountNonPositive` | The amount is zero or negative — invalid for a SEP-41 transfer. |
 | `InvalidSignature` | No genuine signature found. |
-| `NoMatchingCredentialNode` | A signer's address matches no node in the entry being signed. |
+| `NoMatchingCredentialNode` | A signer's address matches no node (top-level address or delegate) in an address-bearing entry being signed. `SourceAccount` entries are `UnsupportedCredentialType` instead. |
 | `SimulationEventsMalformed { reason }` | An event didn't decode, or lacks expected topics/data. |
 | `UnexpectedBalanceChange { reason }` | The simulation moved something other than the expected payment. |
 | `ExpectedTransferMissing` | The simulation doesn't show the expected transfer at all. |
-| `SigningFailed { reason }` | The `Signer` implementation returned an error, or isn't an `Ed25519` account. |
+| `SigningFailed { reason }` | The `Signer` implementation returned an error from `sign_preimage`; propagated unchanged. |
+| `UnsupportedSignerAddress { address }` | `Signer::address()` is not an `Ed25519` account (`G...`). |
 | `XdrEncodingFailed { reason }` | A value didn't fit its XDR-constrained shape. |
+| `UnsupportedNetwork { network }` | The network passphrase is neither pubnet's nor testnet's; `network` is the rejected passphrase verbatim. |
